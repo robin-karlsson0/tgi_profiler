@@ -6,7 +6,7 @@ import docker
 import pytest
 from huggingface_hub import InferenceClient
 
-from tgi_profiler.server.tgi_container import TGIConfig, TGIContainer
+from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 
 
 @pytest.mark.integration

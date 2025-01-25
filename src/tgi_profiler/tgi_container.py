@@ -418,8 +418,8 @@ class TGIContainer:
                 logger.info("Health check successful")
             else:
                 logger.warning(
-                    f"Health check failed with status {response.status_code}: {response.text}"
-                )
+                    f"Health check failed with status {response.status_code}: "
+                    f"{response.text}")
             return success
         except requests.RequestException as e:
             logger.error(f"Health check failed: {str(e)}")
@@ -576,9 +576,9 @@ class TGIContainer:
                               device_requests, ports):
         """Log the container configuration in human-readable docker run format.
 
-        Formats the container configuration as an equivalent docker run command,
-        making it easier to understand the container setup and reproduce it
-        manually if needed. Handles formatting of:
+        Formats the container configuration as an equivalent docker run
+        command, making it easier to understand the container setup and
+        reproduce it manually if needed. Handles formatting of:
         - GPU device mappings
         - Volume mounts
         - Environment variables

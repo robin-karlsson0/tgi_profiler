@@ -1,5 +1,10 @@
 huggingface-hub
 docker
 pytest
+pytest-asyncio
+pytest-mock
 lark
 colorama
+anthropic
+openai
+pillow
