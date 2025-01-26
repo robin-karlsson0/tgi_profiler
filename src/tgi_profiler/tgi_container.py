@@ -107,8 +107,8 @@ class TGIConfig:
     hf_token: Optional[str] = None
     hf_cache_dir: Optional[Path] = None
     tgi_image: str = "ghcr.io/huggingface/text-generation-inference:3.0.1"
-    health_check_retries: int = 5
-    health_check_interval: float = 20.0
+    health_check_retries: int = 600
+    health_check_interval: float = 1.0
 
 
 class ContainerError(Exception):
@@ -358,12 +358,12 @@ class TGIContainer:
                 shm_size="1g",
                 detach=True)
 
-            logger.info(f"Started container {self._container.id}")
+            logger.debug(f"Started container {self._container.id}")
 
             if not self._wait_for_healthy():
                 # Get final logs before failing
-                logger.info("Final container logs:")
-                logger.info(self._container.logs().decode('utf-8'))
+                logger.debug("Final container logs:")
+                logger.debug(self._container.logs().decode('utf-8'))
                 raise ContainerError("Container failed health check")
 
             self._is_running = True
@@ -415,18 +415,18 @@ class TGIContainer:
 
         try:
             url = f"http://localhost:{self.config.port}/health"
-            logger.info(f"Trying health check at: {url}")
+            logger.debug(f"Trying health check at: {url}")
             response = requests.get(url, timeout=5)
             success = response.status_code == 200
             if success:
-                logger.info("Health check successful")
+                logger.debug("Health check successful")
             else:
-                logger.warning(
+                logger.debug(
                     f'Health check failed with status {response.status_code}: '
                     f'{response.text}')
             return success
         except requests.RequestException as e:
-            logger.error(f"Health check failed: {str(e)}")
+            logger.debug(f"Health check failed: {str(e)}")
             return False
 
     def _format_gpu_request(self) -> dict:
@@ -508,21 +508,21 @@ class TGIContainer:
         - Terminates early if container exits with error
         - May take significant time depending on model size and system
         """
-        logger.info('Waiting for container health... '
-                    f'Retries: {self.config.health_check_retries}')
+        logger.debug('Waiting for container health... '
+                     f'Retries: {self.config.health_check_retries}')
 
         for attempt in range(self.config.health_check_retries):
-            logger.info(f"\nHealth check attempt {attempt + 1}")
+            logger.debug(f"\nHealth check attempt {attempt + 1}")
 
             # Check container state
             try:
                 self._container.reload()
                 state = self._container.attrs['State']
-                logger.info(f"Container state: {state['Status']}")
+                logger.debug(f"Container state: {state['Status']}")
 
                 # Print recent logs
-                logger.info("Recent container logs:")
-                logger.info(self._container.logs(tail=50).decode('utf-8'))
+                logger.debug("Recent container logs:")
+                logger.debug(self._container.logs(tail=50).decode('utf-8'))
 
                 # If container exited, show exit code and error
                 if state['Status'] == 'exited':
@@ -540,7 +540,7 @@ class TGIContainer:
                 return True
             time.sleep(self.config.health_check_interval)
 
-        logger.warning("Container failed all health check attempts")
+        logger.error("Container failed all health check attempts")
         return False
 
     def __enter__(self):
@@ -629,7 +629,7 @@ class TGIContainer:
             [f"    -e {env_str} \\" for env_str in env_strs] +
             [f"    {self.config.tgi_image} \\"] + [f"    {' '.join(command)}"])
 
-        logger.info(cmd_str)
+        logger.debug(cmd_str)
 
     def cleanup_stale_containers(self):
         """Remove any stale TGI containers."""
