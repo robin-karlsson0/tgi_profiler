@@ -303,6 +303,10 @@ class TGIContainer:
         ... except ContainerError as e:
         ...     print(f"Failed to start container: {e}")
         """
+        # Substitutes manually removing stale contaienrs by "$ docker rm ID"
+        # Errors may result in stale containers
+        self.cleanup_stale_containers()
+
         if self.is_running:
             return
 
@@ -626,3 +630,14 @@ class TGIContainer:
             [f"    {self.config.tgi_image} \\"] + [f"    {' '.join(command)}"])
 
         logger.info(cmd_str)
+
+    def cleanup_stale_containers(self):
+        """Remove any stale TGI containers."""
+        containers = self._client.containers.list(
+            all=True, filters={'ancestor': self.config.tgi_image})
+        for container in containers:
+            try:
+                container.remove(force=True)
+            except DockerException as e:
+                logger.warning(
+                    f"Failed to remove stale container {container.id}: {e}")
