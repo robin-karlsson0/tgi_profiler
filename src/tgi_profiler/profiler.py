@@ -38,11 +38,12 @@ from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 from tgi_profiler.utils.colored_logging import ColoredLogger
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = ColoredLogger(name=__name__)
 
 INPUT_LEN_MSG_PROMPTING = 77  # Checked with Llama-3.1-8B-Instruct
 OUTPUT_TOLERANCE = 100
+TEMP = 1.5
 
 
 class TokenGenerationError(Exception):
@@ -327,13 +328,17 @@ class TGIMemoryProfiler:
                          f"{self.config.retries_per_point}")
 
             try:
-                response = self.client.chat_completion(messages)
+                # High temperature prevents EOS token from being generated
+                response = self.client.chat_completion(
+                    messages, max_tokens=target_length, temperature=TEMP)
                 output_txt = response.choices[0].message.content
 
                 output_len = self._count_tokens(output_txt)
                 length_diff = abs(output_len - target_length)
 
-                output_len = self._count_tokens(output_txt)
+                logger.info(
+                    f"\tOutput length: {output_len} | Expected length: {target_length} (Diff: {length_diff})"  # noqa
+                )
 
                 if length_diff < OUTPUT_TOLERANCE:
                     return output_txt, output_len
@@ -394,6 +399,9 @@ class TGIMemoryProfiler:
             hf_token=self.config.hf_token,
             hf_cache_dir=self.config.hf_cache_dir,
         )
+
+        logger.info(
+            f'Testing (input, output) = ({input_length}, {output_length})')
 
         try:
             with TGIContainer(tgi_config) as container:  # noqa
@@ -462,7 +470,7 @@ class TGIMemoryProfiler:
         with tqdm(total=total_points, desc=self._current_phase) as self._pbar:
             for i in self.input_points:
                 for o in self.output_points:
-                    result = self.test_point(i, o)
+                    result = self.test_point(int(i), int(o))
                     self.results.append(result)
                     self._pbar.update(1)
 
@@ -629,3 +637,45 @@ def profile_model(config: ProfilerConfig) -> List[ProfilingResult]:
     """
     profiler = TGIMemoryProfiler(config)
     return profiler.run_profiling()
+
+
+if __name__ == "__main__":
+    import os
+    from pathlib import Path
+
+    # Test configuration for quick validation
+    config = ProfilerConfig(
+        model_id="meta-llama/Llama-3.1-8B-Instruct",
+        gpu_ids=[0],
+        min_input_length=128,
+        max_input_length=8192,  # Small range for testing
+        min_output_length=128,
+        max_output_length=4096,  # Small range for testing
+        grid_size=3,  # Minimal grid for quick testing
+        refinement_rounds=1,  # Single refinement for testing
+        port=8080,
+        output_dir=Path("./test_results"),
+        hf_token=os.getenv("HF_TOKEN"),
+        retries_per_point=8)
+
+    # Create output directory if it doesn't exist
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Starting test profiling run")
+    results = profile_model(config)
+
+    # Print summary of results
+    successes = sum(1 for r in results if r.success)
+    logger.info(f"Completed {len(results)} test points")
+    logger.info(f"Successful points: {successes}")
+    logger.info(f"Failed points: {len(results) - successes}")
+
+    # Print maximum successful lengths found
+    successful_results = [r for r in results if r.success]
+    if successful_results:
+        max_input = max(r.input_length for r in successful_results)
+        max_output = max(r.output_length for r in successful_results)
+        logger.info(f"Maximum successful input length: {max_input}")
+        logger.info(f"Maximum successful output length: {max_output}")
+    else:
+        logger.warning("No successful test points found")
