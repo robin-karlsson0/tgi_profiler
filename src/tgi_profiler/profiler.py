@@ -24,7 +24,7 @@ Example Usage:
 """
 
 import json
-import logging
+# import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -38,7 +38,7 @@ from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 from tgi_profiler.utils.colored_logging import ColoredLogger
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 logger = ColoredLogger(name=__name__)
 
 INPUT_LEN_MSG_PROMPTING = 77  # Checked with Llama-3.1-8B-Instruct
@@ -475,57 +475,36 @@ class TGIMemoryProfiler:
                     self._pbar.update(1)
 
     def _refine_grid(self) -> None:
-        """Adapt grid points to focus on memory boundary regions.
+        """Adapt grid points to focus on memory boundary regions using actual
+        token counts.
 
-        Refines sampling around transition points between successful and failed
-        tests:
-        1. Creates success/failure matrix from current results
-        2. Identifies boundary points (success adjacent to failure)
-        3. Adds midpoints between boundary and neighbor points
-        4. Updates input_points and output_points arrays
-
-        Raises:
-            ValueError: If no results available or invalid points found
-
-        Updates:
-            self.input_points: New input length test points
-            self.output_points: New output length test points
-
-        Note:
-            Critical for efficiently finding memory limits
-            Focuses computation on boundary regions
-            Maintains sorted, unique point arrays
+        Instead of mapping to idealized grid points, this method:
+        1. Uses actual observed token counts from results
+        2. Creates success/failure matrix from real values
+        3. Identifies boundary points between success/failure regions
+        4. Generates new test points around these boundaries
         """
         logger.info("Starting grid refinement")
 
-        # Validate we have results to analyze
         if not self.results:
             raise ValueError("No results available for grid refinement")
 
-        # Create dictionaries to validate and map input/output lengths
-        input_dict = {x: i for i, x in enumerate(self.input_points)}
-        output_dict = {x: i for i, x in enumerate(self.output_points)}
+        # Extract actual input/output lengths from results
+        actual_inputs = sorted(set(r.input_length for r in self.results))
+        actual_outputs = sorted(set(r.output_length for r in self.results))
 
-        # Validate all result points are in our grids
+        # Create mappings for matrix indexing
+        input_dict = {x: i for i, x in enumerate(actual_inputs)}
+        output_dict = {x: i for i, x in enumerate(actual_outputs)}
+
+        # Create success/failure matrix from actual results
+        success_matrix = np.zeros((len(actual_inputs), len(actual_outputs)))
         for result in self.results:
-            if (result.input_length not in input_dict
-                    or result.output_length not in output_dict):
-                raise ValueError(
-                    "Result contains points not in grid: "
-                    f"({result.input_length}, {result.output_length})")
-        # Create success/failure matrix from results
-        input_dict = {x: i for i, x in enumerate(self.input_points)}
-        output_dict = {x: i for i, x in enumerate(self.output_points)}
+            i = input_dict[result.input_length]
+            j = output_dict[result.output_length]
+            success_matrix[i, j] = 1 if result.success else 0
 
-        success_matrix = np.zeros(
-            (len(self.input_points), len(self.output_points)))
-        for result in self.results:
-            if result.input_length in input_dict and result.output_length in output_dict:  # noqa
-                i = input_dict[result.input_length]
-                j = output_dict[result.output_length]
-                success_matrix[i, j] = 1 if result.success else 0
-
-        # Find boundary points (successful points adjacent to failures)
+        # Find boundary points
         boundary_inputs = set()
         boundary_outputs = set()
 
@@ -543,8 +522,8 @@ class TGIMemoryProfiler:
                             break
 
                     if is_boundary:
-                        boundary_inputs.add(self.input_points[i])
-                        boundary_outputs.add(self.output_points[j])
+                        boundary_inputs.add(actual_inputs[i])
+                        boundary_outputs.add(actual_outputs[j])
 
         # Generate new points around boundary
         def generate_neighborhood(point: int,
@@ -567,29 +546,30 @@ class TGIMemoryProfiler:
 
         for input_point in boundary_inputs:
             new_input_points.update(
-                generate_neighborhood(input_point, self.input_points.tolist()))
+                generate_neighborhood(input_point, actual_inputs))
 
         for output_point in boundary_outputs:
             new_output_points.update(
-                generate_neighborhood(output_point,
-                                      self.output_points.tolist()))
+                generate_neighborhood(output_point, actual_outputs))
 
-        # Update grids with new points
-        self.input_points = np.sort(
-            np.unique(
-                np.concatenate(
-                    [self.input_points,
-                     np.array(list(new_input_points))])))
+        # Update grids with new points, keeping them within original bounds
+        def filter_points(points: set, min_val: int,
+                          max_val: int) -> np.ndarray:
+            """Filter points to stay within bounds and maintain uniqueness."""
+            return np.sort(
+                np.unique([p for p in points if min_val <= p <= max_val]))
 
-        self.output_points = np.sort(
-            np.unique(
-                np.concatenate(
-                    [self.output_points,
-                     np.array(list(new_output_points))])))
+        self.input_points = filter_points(
+            set(actual_inputs) | new_input_points,
+            self.config.min_input_length, self.config.max_input_length)
+
+        self.output_points = filter_points(
+            set(actual_outputs) | new_output_points,
+            self.config.min_output_length, self.config.max_output_length)
 
         logger.info(
-            f"Grid refinement complete - Added {len(new_input_points)} input "
-            f"points and {len(new_output_points)} output points")
+            f"Grid refinement complete - Current grid has {len(self.input_points)} input "
+            f"points and {len(self.output_points)} output points")
 
     def save_results(self) -> None:
         """Save profiling results to output directory.
@@ -648,9 +628,9 @@ if __name__ == "__main__":
         model_id="meta-llama/Llama-3.1-8B-Instruct",
         gpu_ids=[0],
         min_input_length=128,
-        max_input_length=8192,  # Small range for testing
+        max_input_length=256,  # Small range for testing
         min_output_length=128,
-        max_output_length=4096,  # Small range for testing
+        max_output_length=256,  # Small range for testing
         grid_size=3,  # Minimal grid for quick testing
         refinement_rounds=1,  # Single refinement for testing
         port=8080,
