@@ -1,10 +1,13 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from tgi_profiler.constants import VALID_API_TYPES
 
-HF_DIR = '/home/$USER/.cache/huggingface'
+USER = os.environ.get('USER')
+HF_DIR = f'/home/{USER}/.cache/huggingface'
+HF_TOKEN = os.environ.get('HF_TOKEN')
 
 
 @dataclass
@@ -50,34 +53,28 @@ class MLLMConfig:
 class ProfilerConfig:
     """Configuration for memory profiling parameters.
 
-    This class defines the parameters that control the profiling process,
-    including search ranges, grid resolution, and test methodology.
+    Controls profiling process parameters including sequence lengths, 
+    search behavior, hardware config, and model settings.
 
     Attributes:
-        min_input_length: int
-            Minimum input sequence length to test
-        max_input_length: int
-            Maximum input sequence length to test
-        min_output_length: int
-            Minimum output sequence length to test
-        max_output_length: int
-            Maximum output sequence length to test
-        grid_size: int
-            Initial grid resolution for search
-        refinement_rounds: int
-            Number of times to refine the grid around boundary
-        retries_per_point: int
-            Number of retry attempts per test point
-        output_dir: Path
-            Directory for saving results and logs
-        model_id: str
-            HuggingFace model ID to profile
-        gpu_ids: List[int]
-            List of GPU IDs to use for container
-        port: int
-            Port for TGI container
-        hf_token: Optional[str]
-            HuggingFace token for accessing gated models
+        min_input_length: Minimum input sequence length (default: 128)
+        max_input_length: Maximum input sequence length (default: 8192)
+        min_output_length: Minimum output sequence length (default: 128)
+        max_output_length: Maximum output sequence length (default: 4096)
+        grid_size: Initial grid resolution (default: 8)
+        port: TGI container port (default: 8080)
+        refinement_rounds: Grid refinement iterations (default: 2)
+        retries_per_point: Test point retry attempts (default: 8)
+        output_dir: Results directory (default: "profiler_results")
+        model_id: HuggingFace model ID
+        gpu_ids: GPU devices to use (default: [0])
+        hf_token: HuggingFace access token (optional)
+        hf_cache_dir: Model cache directory (optional)
+        base_url: Inference API endpoint (default: "http://localhost:8080/v1")
+
+    Notes:
+        Creates output directory if it doesn't exist
+        Defaults gpu_ids to [0] if not specified
     """
     min_input_length: int = 128
     max_input_length: int = 8192
@@ -86,12 +83,12 @@ class ProfilerConfig:
     grid_size: int = 8
     port: int = 8080
     refinement_rounds: int = 2
-    retries_per_point: int = 3
+    retries_per_point: int = 8
     output_dir: Path = Path("profiler_results")
     model_id: str = ""
     gpu_ids: List[int] = None
-    hf_token: Optional[str] = None
-    hf_cache_dir: Optional[str] = HF_DIR
+    hf_token: Optional[str] = HF_TOKEN
+    hf_cache_dir: Optional[str] = Path(HF_DIR)
     # Inference client configuration
     base_url: Optional[str] = 'http://localhost:8080/v1'
 

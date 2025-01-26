@@ -1,58 +1,92 @@
-"""Memory profiler for Text Generation Inference (TGI) framework.
+"""Text Generation Inference (TGI) Memory Profiler.
 
-This module implements memory profiling functionality to determine the maximum
-input and output sequence lengths that can be handled by a TGI instance on a
-given GPU setup without running out of memory (OOM).
+A framework for empirically determining maximum sequence length capabilities
+of LLM models deployed via TGI, avoiding out-of-memory (OOM) errors.
 
-The profiler uses an adaptive search strategy to find the boundary curve of
-viable (input_length, output_length) combinations, providing insights into the
-memory constraints of different model configurations.
+Key Features:
+- Adaptive grid search to find viable (input_length, output_length) pairs
+- Container-based testing with automated cleanup
+- Tokenizer-aware sequence length validation
+- Progress tracking and detailed logging
+- JSON-serializable results
+
+Example Usage:
+    config = ProfilerConfig(
+        model_id="meta-llama/Llama-3.1-8B-Instruct",
+        gpu_ids=[0],
+        min_input_length=128
+        max_input_length=8192
+        min_output_length=128
+        max_output_length=4096
+        grid_size=10
+    )
+    results = profile_model(config)
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 from huggingface_hub import InferenceClient
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from tgi_profiler.config import MLLMConfig, ProfilerConfig
-from tgi_profiler.tgi_container import ContainerError, TGIConfig, TGIContainer
+from tgi_profiler.config import ProfilerConfig
+from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 from tgi_profiler.utils.colored_logging import ColoredLogger
 
+logging.basicConfig(level=logging.DEBUG)
 logger = ColoredLogger(name=__name__)
 
-INPUT_LEN_MSG_PROMPTING = 52
+INPUT_LEN_MSG_PROMPTING = 77  # Checked with Llama-3.1-8B-Instruct
 OUTPUT_TOLERANCE = 100
+
+
+class TokenGenerationError(Exception):
+    """Raised when model fails to generate text with target token length."""
+
+    def __init__(self, target_length: int, actual_length: int, attempts: int):
+        self.target_length = target_length
+        self.actual_length = actual_length
+        self.attempts = attempts
+        super().__init__(
+            f"Failed to generate text with target length {target_length} "
+            f"after {attempts} attempts. Last attempt length: {actual_length}")
 
 
 @dataclass
 class ProfilingResult:
-    """Result from testing a specific input/output length combination.
+    """Results from testing specific input/output length combinations.
+
+    Captures success/failure status and diagnostic information from attempting
+    to run inference with given sequence lengths.
 
     Attributes:
-        input_length: int
-            Input sequence length tested
-        output_length: int
-            Output sequence length tested
-        success: bool
-            Whether the test passed without OOM
-        error_type: Optional[str]
-            Type of error if test failed
-        container_logs: str
-            Relevant container logs from test
-        timestamp: datetime
-            When the test was performed
+        input_length: Target input sequence length tested
+        output_length: Target output sequence length tested
+        success: Whether inference completed without OOM
+        error_type: Classification of failure mode if unsuccessful
+        container_logs: Docker container logs for debugging
+        error_msg: Detailed error description if applicable
+        timestamp: When test was performed
+
+    Example:
+        result = ProfilingResult(
+            input_length=1024,
+            output_length=2048,
+            success=False,
+            error_type="OOMError"
+        )
     """
     input_length: int
     output_length: int
     success: bool
     error_type: Optional[str] = None
     container_logs: str = ""
+    error_msg: Optional[str] = None
     timestamp: datetime = None
 
     def __post_init__(self):
@@ -66,39 +100,62 @@ class ProfilingResult:
             "output_length": self.output_length,
             "success": self.success,
             "error_type": self.error_type,
+            "error_msg": self.error_msg,
             "container_logs": self.container_logs,
             "timestamp": self.timestamp.isoformat()
         }
 
 
 class TGIMemoryProfiler:
-    """Profiler for finding maximum sequence lengths supported by TGI setup.
+    """Memory profiler for Text Generation Inference deployments.
 
-    This class implements the core profiling functionality, using an adaptive
-    grid search strategy to find the boundary between successful and OOM
-    configurations.
+    Uses adaptive grid search to identify maximum viable sequence lengths
+    for a given model and GPU configuration. Manages container lifecycle,
+    tokenization, and result collection.
+
+    Key Features:
+        - Automated boundary detection between viable/OOM regions
+        - Token-exact sequence length testing
+        - Configurable retry logic and refinement rounds
+        - Progress tracking and detailed logging
+        - Result persistence and analysis
 
     Attributes:
-        config: ProfilerConfig
-            Configuration controlling the profiling process
-        results: List[ProfilingResult]
-            Collection of all test results
-        tokenizer: AutoTokenizer
+        config: Controls profiling parameters and model configuration
+        results: Collection of all test results
+        tokenizer: Model-specific tokenizer for length validation
+        client: Interface to running TGI instance
 
-    Methods:
-        run_profiling()
-            Execute the complete profiling process
-        test_point(input_length, output_length)
-            Test a specific length combination
-        save_results()
-            Save results to output directory
+    Example:
+        profiler = TGIMemoryProfiler(config)
+        results = profiler.run_profiling()
+
+    Notes:
+        - Requires Docker daemon access for container management
+        - May take significant time for large parameter spaces
+        - Memory usage increases with sequence lengths tested
     """
 
     def __init__(self, config: ProfilerConfig):
-        """Initialize profiler with configuration.
-        
+        """Initialize memory profiler with configuration.
+
+        Sets up tokenizer, client connection, and initial grid points for
+        testing. Validates configuration parameters and establishes progress
+        tracking.
+
         Args:
-            config: ProfilerConfig object specifying profiling parameters
+            config: Configuration object containing:
+                - model_id: HuggingFace model identifier
+                - gpu_ids: List of GPU devices to use
+                - min/max_input_length: Input sequence bounds
+                - min/max_output_length: Output sequence bounds
+                - grid_size: Initial sampling density
+                - refinement_rounds: Number of boundary refinement passes
+
+        Raises:
+            ValueError: If configuration parameters are invalid
+            TokenizerError: If model tokenizer cannot be loaded
+            ConnectionError: If TGI endpoint unreachable
         """
         self.config = config
         self.results = []
@@ -120,12 +177,12 @@ class TGIMemoryProfiler:
 
     def run_profiling(self) -> List[ProfilingResult]:
         """Execute complete profiling process.
-        
+
         This method orchestrates the entire profiling workflow:
         1. Initial grid search
         2. Multiple rounds of refinement
         3. Result saving
-        
+
         Returns:
             List[ProfilingResult]: All test results
         """
@@ -146,13 +203,19 @@ class TGIMemoryProfiler:
         return self.results
 
     def _count_tokens(self, text: str) -> int:
-        """Count exact number of tokens in text using model's tokenizer.
+        """Count exact number of tokens using model's tokenizer.
 
         Args:
-            text: Text to tokenize
+            text: Input text to tokenize
 
         Returns:
-            Number of tokens in text
+            int: Token count
+
+        Raises:
+            TokenizerError: If tokenization fails
+
+        Note:
+            Uses model's own tokenizer for accuracy, not approximations
         """
         try:
             tokens = self.tokenizer.tokenize(text)
@@ -164,31 +227,37 @@ class TGIMemoryProfiler:
     def _generate_exact_token_input(self, target_length: int) -> str:
         """Generate text that tokenizes to exact target length.
 
-        Uses binary search and the model's tokenizer to generate text
-        that tokenizes to exactly the target number of tokens.
-        
-        Args:
-            client: MLLMClient instance
-            target_length: Desired number of tokens
-            max_iterations: Maximum adjustment iterations
-            
-        Returns:
-            Text that tokenizes to target length
-        """
-        # Start with a reasonable text that's likely too long
+        Uses iterative approach to create text matching target token count:
+        1. Generate initial text longer than target
+        2. Trim characters until token count matches target
 
+        Args:
+            target_length: Desired number of tokens in output text
+
+        Returns:
+            str: Text that tokenizes to exactly target_length tokens
+
+        Raises:
+            ValueError: If target length cannot be achieved
+            TokenizerError: If tokenization fails
+
+        Note:
+            - Critical for accurate memory profiling
+            - May take longer for very large target lengths
+            - Returns minimal text achieving target length
+        """
         base_text = "What is the meaning of life? "
         text = base_text * (target_length // 8)
         current_length = self._count_tokens(text)
-        print(current_length)
 
         # Repeat string until it is longer than required token length
+        iter_counter = 1
         while current_length < target_length:
-            print(current_length)
+            logger.debug(
+                'Iter {iter_counter:02d} | Input length: {current_length}')
             text += base_text
             current_length = self._count_tokens(text)
-
-        print('final current_length:', current_length)
+            iter_counter += 1
 
         # Remove excess tokens one character at a time
         while True:
@@ -197,13 +266,41 @@ class TGIMemoryProfiler:
                 break
             else:
                 text = text[:-1]
+        logger.debug('Input length after trimming: {new_length}')
 
         return text
 
     def _generate_exact_token_output(self, target_length: int,
-                                     input_txt: str) -> str:
-        '''
-        '''
+                                     input_txt: str) -> tuple[str, int]:
+        """Generate model output with exact target token length.
+
+        Uses messaging and retries to achieve output length within tolerance:
+        1. Prompts model to generate maximum tokens
+        2. Tracks best attempt across retries
+        3. Verifies token count matches target
+
+        Args:
+            target_length: Target number of tokens for generated text
+            input_txt: Prompt text to generate from
+
+        Returns:
+            tuple[str, int]: Generated text and its token count
+
+        Raises:
+            TokenGenerationError: If output length not within OUTPUT_TOLERANCE
+                after retries
+            APIError: If model inference fails
+
+        Example:
+            output, length = _generate_exact_token_output(1000, "Explain love")
+            assert abs(length - 1000) < OUTPUT_TOLERANCE
+
+        Notes:
+            - Uses system prompt to encourage verbose output
+            - Tracks closest attempt if target not hit
+            - Retries configured via config.retries_per_llm_inference
+            - Token count tolerance set by OUTPUT_TOLERANCE constant
+        """
         # Create prompt that forces model to generate max length
         system_msg = {
             'role':
@@ -221,35 +318,72 @@ class TGIMemoryProfiler:
 
         messages = [system_msg, user_msg]
 
+        best_attempt = {'text': None, 'length': 0, 'diff': float('inf')}
+
         # Attempt inference and verify lengths
-        response = self.client.chat_completion(messages)
-        output_txt = response.choices[0].message.content
+        for attempt in range(self.config.retries_per_point):
 
-        output_len = self._count_tokens(output_txt)
+            logger.debug(f"Attempt {attempt + 1}/"
+                         f"{self.config.retries_per_point}")
 
-        logger.info(f"Generated output length: {output_len}")
+            try:
+                response = self.client.chat_completion(messages)
+                output_txt = response.choices[0].message.content
 
-        if abs(output_len - target_length) < 100:
-            return output_txt, output_len
-        else:
-            raise ValueError("Output length mismatch")
+                output_len = self._count_tokens(output_txt)
+                length_diff = abs(output_len - target_length)
+
+                output_len = self._count_tokens(output_txt)
+
+                if length_diff < OUTPUT_TOLERANCE:
+                    return output_txt, output_len
+
+                if length_diff < best_attempt['diff']:
+                    best_attempt = {
+                        'text': output_txt,
+                        'length': output_len,
+                        'diff': length_diff
+                    }
+
+            except Exception as e:
+                logger.error(
+                    f"Inference failed on attempt {attempt + 1}: {str(e)}")
+                if attempt == self.config.retries_per_point - 1:
+                    raise
+
+        raise TokenGenerationError(target_length=target_length,
+                                   actual_length=best_attempt['length'],
+                                   attempts=self.config.retries_per_point)
 
     def test_point(self, input_length: int,
                    output_length: int) -> ProfilingResult:
-        """Test a specific input/output length combination.
-        
-        This method:
-        1. Starts a TGI container with specified lengths
-        2. Attempts inference with maximum length input
-        3. Monitors for OOM or other errors
-        4. Returns result with success/failure and error details
-        
+        """Test TGI memory capacity with specific sequence lengths.
+
+        Validates if model can handle given input/output lengths without OOM:
+        1. Configures and starts TGI container
+        2. Generates input text of exact token length
+        3. Attempts model inference with max token generation
+        4. Monitors for OOM and token length errors
+
         Args:
-            input_length: Input sequence length to test
-            output_length: Output sequence length to test
-            
+            input_length: Target input sequence length
+            output_length: Target output sequence length
+
         Returns:
-            ProfilingResult for the test point
+            ProfilingResult containing:
+            - Success/failure status
+            - Actual token lengths achieved
+            - Error details and container logs if failed
+
+        Raises:
+            None - errors captured in ProfilingResult
+
+        Notes:
+            - Accounts for message prompt tokens in input length
+            - Returns early on TokenGenerationError
+            - Captures container logs on failure
+            - OOM errors indicate memory limit found
+            - Success requires exact token match
         """
         tgi_config = TGIConfig(
             model_id=self.config.model_id,
@@ -261,63 +395,67 @@ class TGIMemoryProfiler:
             hf_cache_dir=self.config.hf_cache_dir,
         )
 
-        for attempt in range(self.config.retries_per_point):
-            try:
-                with TGIContainer(tgi_config) as container:
+        try:
+            with TGIContainer(tgi_config) as container:  # noqa
+                logger.debug("Container started successfully")
 
-                    # Create input that will tokenize to exact length minus
-                    # approx. tokens required for message formatting
-                    input_txt = self._generate_exact_token_input(
-                        input_length - INPUT_LEN_MSG_PROMPTING)
+                # Create input that will tokenize to exact length minus
+                # approx. tokens required for message formatting
+                input_txt = self._generate_exact_token_input(
+                    input_length - INPUT_LEN_MSG_PROMPTING)
+                logger.debug(f'Generated input text of length '
+                             f'{self._count_tokens(input_txt)}')
 
-                    output_txt, output_len = self._generate_exact_token_output(
+                # Generate output text with exact token count
+                # - Retry until successful or max attempts reached and
+                #   return a failiure due to token length mismatch
+                try:
+                    out = self._generate_exact_token_output(
                         output_length, input_txt)
+                    output_txt, output_len = out
+                except TokenGenerationError as e:
+                    logger.warning(f"Exact token generation failed: {str(e)}")
+                    return ProfilingResult(input_length=input_length,
+                                           output_length=output_length,
+                                           success=False,
+                                           error_type="TokenGenerationError",
+                                           error_msg=str(e))
 
-                    # Verify actual token counts
-                    actual_input_tokens = self._count_tokens(
-                        input_txt) + INPUT_LEN_MSG_PROMPTING
-                    actual_output_tokens = self._count_tokens(output_txt)
+                logger.debug(f"Generated output text of length {output_len}")
 
-                    # Allow small tolerance for output length
-                    if (actual_input_tokens != input_length
-                            or actual_output_tokens
-                            < output_length - OUTPUT_TOLERANCE):
-                        logger.warning(
-                            f"Token length mismatch - Input: expected={input_length}, "
-                            f"actual={actual_input_tokens}, Output: expected={output_length}, "
-                            f"actual={actual_output_tokens}")
-                        return ProfilingResult(
-                            input_length=input_length,
-                            output_length=output_length,
-                            success=False,
-                            error_type="TokenLengthMismatch")
+                actual_input_tokens = self._count_tokens(
+                    input_txt) + INPUT_LEN_MSG_PROMPTING
+                return ProfilingResult(input_length=actual_input_tokens,
+                                       output_length=output_len,
+                                       success=True)
 
-                    return ProfilingResult(input_length=actual_input_tokens,
-                                           output_length=actual_output_tokens,
-                                           success=True)
+        except Exception as e:
+            container_logs = ""
+            if hasattr(e, "container") and e.container:
+                container_logs = e.container.logs().decode('utf-8')
 
-            except (ContainerError) as e:
-                error_type = "OOM" if "out of memory" in str(
-                    e).lower() else "Other"
-                container_logs = ""
-                if hasattr(e, "container") and e.container:
-                    container_logs = e.container.logs().decode('utf-8')
-
-                # Only retry if not OOM error
-                if error_type != "OOM" and attempt < self.config.retries_per_point - 1:
-                    continue
-
-                return ProfilingResult(input_length=input_length,
-                                       output_length=output_length,
-                                       success=False,
-                                       error_type=error_type,
-                                       container_logs=container_logs)
+            return ProfilingResult(input_length=input_length,
+                                   output_length=output_length,
+                                   success=False,
+                                   container_logs=container_logs,
+                                   error_type=type(e).__name__,
+                                   error_msg=str(e))
 
     def _run_grid_search(self) -> None:
-        """Run grid search on current points.
-        
-        Tests all combinations of current input and output points,
-        tracking results and updating progress bar.
+        """Execute grid search across sequence length combinations.
+
+        Systematically tests every input/output length pair in current grid:
+        1. Calculates total test points needed
+        2. Tests each length combination with test_point()
+        3. Records results in self.results
+        4. Displays progress with tqdm bar
+
+        Updates:
+            self.results: Appended with ProfilingResult for each test
+            self._pbar: Progress bar showing completion status
+
+        Note:
+            Grid points defined by self.input_points and self.output_points
         """
         total_points = len(self.input_points) * len(self.output_points)
 
@@ -329,20 +467,29 @@ class TGIMemoryProfiler:
                     self._pbar.update(1)
 
     def _refine_grid(self) -> None:
-        """Refine grid points around the boundary between success/failure regions.
-        
-        This method:
-        1. Creates a success/failure matrix from current results
-        2. Identifies boundary points (success points adjacent to failures)
-        3. Adds new test points around the boundary
+        """Adapt grid points to focus on memory boundary regions.
+
+        Refines sampling around transition points between successful and failed
+        tests:
+        1. Creates success/failure matrix from current results
+        2. Identifies boundary points (success adjacent to failure)
+        3. Adds midpoints between boundary and neighbor points
         4. Updates input_points and output_points arrays
-        
-        The refinement focuses sampling around the memory limit boundary
-        to better characterize the transition between working and OOM states.
-        
+
         Raises:
-            ValueError: If no results are available or if results contain invalid points
+            ValueError: If no results available or invalid points found
+
+        Updates:
+            self.input_points: New input length test points
+            self.output_points: New output length test points
+
+        Note:
+            Critical for efficiently finding memory limits
+            Focuses computation on boundary regions
+            Maintains sorted, unique point arrays
         """
+        logger.info("Starting grid refinement")
+
         # Validate we have results to analyze
         if not self.results:
             raise ValueError("No results available for grid refinement")
@@ -365,7 +512,7 @@ class TGIMemoryProfiler:
         success_matrix = np.zeros(
             (len(self.input_points), len(self.output_points)))
         for result in self.results:
-            if result.input_length in input_dict and result.output_length in output_dict:
+            if result.input_length in input_dict and result.output_length in output_dict:  # noqa
                 i = input_dict[result.input_length]
                 j = output_dict[result.output_length]
                 success_matrix[i, j] = 1 if result.success else 0
@@ -433,17 +580,26 @@ class TGIMemoryProfiler:
                      np.array(list(new_output_points))])))
 
         logger.info(
-            f"Grid refined: inputs {len(new_input_points)} new points, "
-            f"outputs {len(new_output_points)} new points")
+            f"Grid refinement complete - Added {len(new_input_points)} input "
+            f"points and {len(new_output_points)} output points")
 
     def save_results(self) -> None:
         """Save profiling results to output directory.
-        
-        Saves both raw results and processed boundary information
-        in JSON format.
+
+        Writes JSON file containing:
+        - Full configuration parameters
+        - All test results with timestamps
+        - Success/failure data for each point
+
+        Creates:
+            profile_results_{timestamp}.json in config.output_dir
+
+        Note:
+            Results include raw data for external analysis
+            Timestamp ensures unique filenames
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_file = self.config.output_dir / f"profile_results_{timestamp}.json"
+        results_file = self.config.output_dir / f"profile_res_{timestamp}.json"
 
         with open(results_file, 'w') as f:
             json.dump(

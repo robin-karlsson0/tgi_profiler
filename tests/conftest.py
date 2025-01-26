@@ -12,8 +12,9 @@ from tgi_profiler.profiler import (ProfilerConfig, TGIContainer,
                                    TGIMemoryProfiler)
 from tgi_profiler.tgi_container import TGIConfig
 
-MODEL = 'microsoft/Phi-3-mini-4k-instruct'
-HF_DIR = '/home/$USER/.cache/huggingface'
+MODEL = 'meta-llama/Llama-3.1-8B-Instruct'
+USER = os.environ.get('USER')
+HF_DIR = f'/home/{USER}/.cache/huggingface'
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 
@@ -169,28 +170,29 @@ def basic_profiler_config():
                           grid_size=4,
                           port=8080,
                           refinement_rounds=2,
-                          retries_per_point=1,
+                          retries_per_point=5,
                           model_id=MODEL,
-                          hf_cache_dir=HF_DIR,
+                          hf_token=HF_TOKEN,
+                          hf_cache_dir=Path(HF_DIR),
                           output_dir=Path("/tmp"))
 
 
 @pytest.fixture
 def create_profiler():
     """Factory fixture for creating profiler with specific grid points.
-    
+
     This fixture returns a function that creates a TGIMemoryProfiler instance
     with specified grid points, making it easy to create test-specific profiler
     configurations.
-    
+
     Args:
         config (ProfilerConfig): Base configuration for the profiler
         input_points (List[int]): Input sequence lengths to use
         output_points (List[int]): Output sequence lengths to use
-    
+
     Returns:
         Function that creates a configured TGIMemoryProfiler instance
-    
+
     Example:
         def test_something(create_profiler, basic_profiler_config):
             profiler = create_profiler(
