@@ -169,8 +169,9 @@ def basic_profiler_config():
                           grid_size=4,
                           port=8080,
                           refinement_rounds=2,
+                          retries_per_point=1,
                           model_id=MODEL,
-                          hf_cache_dir='/home/USER/.cache/huggingface',
+                          hf_cache_dir=HF_DIR,
                           output_dir=Path("/tmp"))
 
 

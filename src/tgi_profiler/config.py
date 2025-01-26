@@ -4,6 +4,8 @@ from typing import List, Optional
 
 from tgi_profiler.constants import VALID_API_TYPES
 
+HF_DIR = '/home/$USER/.cache/huggingface'
+
 
 @dataclass
 class MLLMConfig:
@@ -89,7 +91,7 @@ class ProfilerConfig:
     model_id: str = ""
     gpu_ids: List[int] = None
     hf_token: Optional[str] = None
-    hf_cache_dir: Optional[str] = '/home/USER/.cache/huggingface'
+    hf_cache_dir: Optional[str] = HF_DIR
     # Inference client configuration
     base_url: Optional[str] = 'http://localhost:8080/v1'
 

@@ -26,6 +26,9 @@ from tgi_profiler.utils.colored_logging import ColoredLogger
 
 logger = ColoredLogger(name=__name__)
 
+INPUT_LEN_MSG_PROMPTING = 52
+OUTPUT_TOLERANCE = 100
+
 
 @dataclass
 class ProfilingResult:
@@ -222,7 +225,14 @@ class TGIMemoryProfiler:
         response = self.client.chat_completion(messages)
         output_txt = response.choices[0].message.content
 
-        return output_txt
+        output_len = self._count_tokens(output_txt)
+
+        logger.info(f"Generated output length: {output_len}")
+
+        if abs(output_len - target_length) < 100:
+            return output_txt, output_len
+        else:
+            raise ValueError("Output length mismatch")
 
     def test_point(self, input_length: int,
                    output_length: int) -> ProfilingResult:
@@ -255,21 +265,23 @@ class TGIMemoryProfiler:
             try:
                 with TGIContainer(tgi_config) as container:
 
-                    # Create input that will tokenize to exact length
-                    input_txt = self._generate_exact_token_input(input_length)
+                    # Create input that will tokenize to exact length minus
+                    # approx. tokens required for message formatting
+                    input_txt = self._generate_exact_token_input(
+                        input_length - INPUT_LEN_MSG_PROMPTING)
 
-                    output_txt = self._generate_exact_token_output(
+                    output_txt, output_len = self._generate_exact_token_output(
                         output_length, input_txt)
 
                     # Verify actual token counts
-                    actual_input_tokens = self._count_tokens(input_txt)
+                    actual_input_tokens = self._count_tokens(
+                        input_txt) + INPUT_LEN_MSG_PROMPTING
                     actual_output_tokens = self._count_tokens(output_txt)
 
                     # Allow small tolerance for output length
-                    output_tolerance = 100  # tokens
                     if (actual_input_tokens != input_length
                             or actual_output_tokens
-                            < output_length - output_tolerance):
+                            < output_length - OUTPUT_TOLERANCE):
                         logger.warning(
                             f"Token length mismatch - Input: expected={input_length}, "
                             f"actual={actual_input_tokens}, Output: expected={output_length}, "
