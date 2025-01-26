@@ -8,3 +8,5 @@ colorama
 anthropic
 openai
 pillow
+numpy
+transformers

@@ -418,8 +418,8 @@ class TGIContainer:
                 logger.info("Health check successful")
             else:
                 logger.warning(
-                    f"Health check failed with status {response.status_code}: "
-                    f"{response.text}")
+                    f'Health check failed with status {response.status_code}: '
+                    f'{response.text}')
             return success
         except requests.RequestException as e:
             logger.error(f"Health check failed: {str(e)}")

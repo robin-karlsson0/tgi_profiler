@@ -1,15 +1,18 @@
 import os
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import numpy as np
 import pytest
 from docker.errors import DockerException
 from docker.models.containers import Container
 
-from tgi_profiler.mllm_client import MLLMConfig
+from tgi_profiler.mllm_client import MLLMClient, MLLMConfig
+from tgi_profiler.profiler import (ProfilerConfig, TGIContainer,
+                                   TGIMemoryProfiler)
 from tgi_profiler.tgi_container import TGIConfig
 
-MODEL = 'microsoft/Phi-3-mini-4k-instruct'  # "meta-llama/Meta-Llama-3-8B-Instruct"
+MODEL = 'microsoft/Phi-3-mini-4k-instruct'
 HF_DIR = '/home/$USER/.cache/huggingface'
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
@@ -18,8 +21,8 @@ def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
         "markers",
-        "integration: mark test as an integration test requiring docker and network access"
-    )
+        "integration: mark test as an integration test requiring docker and "
+        "network access")
 
 
 ###################
@@ -149,3 +152,85 @@ def mllm_config_hf():
                       max_tokens=400,
                       temperature=0.7,
                       img_quality=90)
+
+
+##############
+#  Profiler
+##############
+
+
+@pytest.fixture
+def basic_profiler_config():
+    """Create a basic profiler configuration for testing."""
+    return ProfilerConfig(min_input_length=1000,
+                          max_input_length=4000,
+                          min_output_length=500,
+                          max_output_length=2000,
+                          grid_size=4,
+                          port=8080,
+                          refinement_rounds=2,
+                          model_id=MODEL,
+                          hf_cache_dir='/home/USER/.cache/huggingface',
+                          output_dir=Path("/tmp"))
+
+
+@pytest.fixture
+def create_profiler():
+    """Factory fixture for creating profiler with specific grid points.
+    
+    This fixture returns a function that creates a TGIMemoryProfiler instance
+    with specified grid points, making it easy to create test-specific profiler
+    configurations.
+    
+    Args:
+        config (ProfilerConfig): Base configuration for the profiler
+        input_points (List[int]): Input sequence lengths to use
+        output_points (List[int]): Output sequence lengths to use
+    
+    Returns:
+        Function that creates a configured TGIMemoryProfiler instance
+    
+    Example:
+        def test_something(create_profiler, basic_profiler_config):
+            profiler = create_profiler(
+                basic_profiler_config,
+                input_points=[1000, 2000, 3000],
+                output_points=[500, 1000, 1500]
+            )
+    """
+
+    def _create_profiler(config, input_points, output_points):
+        profiler = TGIMemoryProfiler(config)
+        profiler.input_points = np.array(input_points)
+        profiler.output_points = np.array(output_points)
+        return profiler
+
+    return _create_profiler
+
+
+@pytest.fixture
+def mock_client():
+    """Create a mock MLLMClient with configured async responses."""
+    client = MagicMock(spec=MLLMClient)
+    client.api = MagicMock()
+    client.api.client = MagicMock()
+    # Make post method async
+    client.api.client.post = AsyncMock()
+    return client
+
+
+@pytest.fixture
+def mock_container():
+    """Create a mock TGIContainer with async context manager."""
+    container = MagicMock(spec=TGIContainer)
+
+    # Mock async context manager
+    async def async_enter():
+        return container
+
+    async def async_exit(exc_type, exc_val, exc_tb):
+        pass
+
+    container.__aenter__ = async_enter
+    container.__aexit__ = async_exit
+    return container
