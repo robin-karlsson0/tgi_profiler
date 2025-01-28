@@ -72,6 +72,8 @@ class ProfilerConfig:
         hf_token: HuggingFace access token (optional)
         hf_cache_dir: Model cache directory (optional)
         base_url: Inference API endpoint (default: "http://localhost:8080/v1")
+        output_tolerance_pct: Tolerance [%] for output length variation (default: 5.0)
+        temp: Temperature for response generation high enough to avoid predicting EOS token (default: 1.5)
 
         # Boundary detection parameters
         k_neighbors: Number of nearest neighbors for local boundary detection (default: 5)
@@ -98,6 +100,8 @@ class ProfilerConfig:
     hf_token: Optional[str] = HF_TOKEN
     hf_cache_dir: Optional[str] = Path(HF_DIR)
     base_url: Optional[str] = 'http://localhost:8080/v1'
+    output_tolerance_pct: float = 0.05
+    temp = 1.5
 
     # Refinement parameters
     refinement_rounds: int = 2
@@ -109,7 +113,7 @@ class ProfilerConfig:
     distance_scale: float = 1000
     consistency_radius: float = 1000
     redundancy_weight: float = 0.5
-    max_pair_distance: float = 2000
+    max_pair_distance: float = 1e12
     min_refinement_dist: int = 50
     grid_size: int = 8
 

@@ -28,17 +28,15 @@ import json
 # import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from huggingface_hub import InferenceClient
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-if TYPE_CHECKING:
-    from tgi_profiler.boundary_detection import (identify_boundary_pairs,
-                                                 BoundaryPair)
-
+from tgi_profiler.boundary_detection import (BoundaryPair,
+                                             identify_boundary_pairs)
 from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 from tgi_profiler.utils.colored_logging import ColoredLogger
@@ -47,8 +45,6 @@ from tgi_profiler.utils.colored_logging import ColoredLogger
 logger = ColoredLogger(name=__name__)
 
 INPUT_LEN_MSG_PROMPTING = 77  # Checked with Llama-3.1-8B-Instruct
-OUTPUT_TOLERANCE = 100
-TEMP = 1.5
 
 
 class TokenGenerationError(Exception):
@@ -513,7 +509,10 @@ class TGIMemoryProfiler:
             try:
                 # High temperature prevents EOS token from being generated
                 response = self.client.chat_completion(
-                    messages, max_tokens=target_length, temperature=TEMP)
+                    messages,
+                    max_tokens=target_length,
+                    temperature=self.config.temp,
+                )
                 output_txt = response.choices[0].message.content
 
                 output_len = self._count_tokens(output_txt)
@@ -523,7 +522,7 @@ class TGIMemoryProfiler:
                     f"\tOutput length: {output_len} | Expected length: {target_length} (Diff: {length_diff})"  # noqa
                 )
 
-                if length_diff < OUTPUT_TOLERANCE:
+                if length_diff < output_len * self.config.output_tolerance_pct:
                     return output_txt, output_len
 
                 if length_diff < best_attempt['diff']:
@@ -810,12 +809,12 @@ if __name__ == "__main__":
     config = ProfilerConfig(
         model_id="meta-llama/Llama-3.1-8B-Instruct",
         gpu_ids=[0],
-        min_input_length=4096,
-        max_input_length=65536,  # Small range for testing
+        min_input_length=2048,
+        max_input_length=32768,  # Small range for testing
         min_output_length=512,
         max_output_length=32768,  # Small range for testing
         grid_size=3,  # Minimal grid for quick testing
-        refinement_rounds=1,  # Single refinement for testing
+        refinement_rounds=5,  # Single refinement for testing
         port=8080,
         output_dir=Path("./test_results"),
         hf_token=os.getenv("HF_TOKEN"),
