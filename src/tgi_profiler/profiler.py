@@ -22,17 +22,21 @@ Example Usage:
     )
     results = profile_model(config)
 """
+from __future__ import annotations
 
 import json
 # import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import numpy as np
 from huggingface_hub import InferenceClient
 from tqdm import tqdm
 from transformers import AutoTokenizer
+
+if TYPE_CHECKING:
+    from tgi_profiler.boundary_detection import identify_boundary_pairs
 
 from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
@@ -193,11 +197,12 @@ class TGIMemoryProfiler:
         self._current_phase = "Initial Grid Search"
         self._run_grid_search()
 
-        # Refinement rounds
+        # Refinement rounds focusing only on boundary points
         for round_num in range(self.config.refinement_rounds):
             self._current_phase = f"Refinement Round {round_num + 1}"
-            self._refine_grid()
-            self._run_grid_search()
+            boundary_pairs = identify_boundary_pairs()
+            new_test_points = self._interpolate_boundary_points(boundary_pairs)
+            self._test_new_points(new_test_points)
 
         # Save final results
         self.save_results()

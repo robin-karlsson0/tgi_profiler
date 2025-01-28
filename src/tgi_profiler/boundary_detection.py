@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 from scipy.spatial import KDTree
 
-from tgi_profiler.profiler import ProfilingResult
+if TYPE_CHECKING:
+    from tgi_profiler.profiler import ProfilingResult
+
 from tgi_profiler.utils.colored_logging import ColoredLogger
 
 logger = ColoredLogger(name=__name__)
