@@ -96,7 +96,7 @@ def _compute_confidence(
 
     Args:
         success: Point representing successful configuration
-        failure: Point representing failed configuration 
+        failure: Point representing failed configuration
         knn_distance: Distance to point if from KNN search (optional)
         results: All profiling results for consistency check
         config: Configuration parameters
@@ -209,8 +209,7 @@ def _filter_pairs(pairs: List[BoundaryPair], config) -> List[BoundaryPair]:
 
 def identify_boundary_pairs(results: List[ProfilingResult],
                             config: BoundaryConfig) -> List[BoundaryPair]:
-    """Detect boundary pairs between successful and failed memory
-        configurations.
+    """Detect boundary pairs between successful and failed memory configs.
 
     Uses a hybrid approach combining local and global boundary detection:
     1. Local: K-nearest neighbors to find close success/failure transitions
