@@ -10,3 +10,4 @@ openai
 pillow
 numpy
 transformers
+scipy

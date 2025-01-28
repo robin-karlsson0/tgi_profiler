@@ -71,6 +71,8 @@ class ProfilerConfig:
         hf_token: HuggingFace access token (optional)
         hf_cache_dir: Model cache directory (optional)
         base_url: Inference API endpoint (default: "http://localhost:8080/v1")
+        min_refinement_dist: Minimum distance between two boundary points for
+            further refinement (default: 50)
 
     Notes:
         Creates output directory if it doesn't exist
@@ -82,8 +84,6 @@ class ProfilerConfig:
     max_output_length: int = 4096
     grid_size: int = 8
     port: int = 8080
-    refinement_rounds: int = 2
-    retries_per_point: int = 8
     output_dir: Path = Path("profiler_results")
     model_id: str = ""
     gpu_ids: List[int] = None
@@ -91,6 +91,10 @@ class ProfilerConfig:
     hf_cache_dir: Optional[str] = Path(HF_DIR)
     # Inference client configuration
     base_url: Optional[str] = 'http://localhost:8080/v1'
+    # Refinement parameters
+    refinement_rounds: int = 2
+    retries_per_point: int = 8
+    min_refinement_dist: int = 50
 
     def __post_init__(self):
         if self.gpu_ids is None:

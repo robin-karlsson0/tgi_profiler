@@ -36,7 +36,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 if TYPE_CHECKING:
-    from tgi_profiler.boundary_detection import identify_boundary_pairs
+    from tgi_profiler.boundary_detection import (identify_boundary_pairs,
+                                                 BoundaryPair)
 
 from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
@@ -109,6 +110,12 @@ class ProfilingResult:
             "container_logs": self.container_logs,
             "timestamp": self.timestamp.isoformat()
         }
+
+
+@dataclass
+class InterpolationPoint:
+    input_length: int
+    output_length: int
 
 
 class TGIMemoryProfiler:
@@ -207,6 +214,82 @@ class TGIMemoryProfiler:
         # Save final results
         self.save_results()
         return self.results
+
+    def _interpolate_boundary_points(
+        self,
+        boundary_pairs: List[BoundaryPair],
+    ) -> List[InterpolationPoint]:
+        """Generate new test points by interpolating between successful and
+        failed configurations.
+
+        For each boundary pair, computes the midpoint between the success and
+        failure points in both input and output dimensions. Only generates
+        points when at least one dimension has a difference larger than
+        min_refinement_dist.
+
+        Args:
+            boundary_pairs: List of BoundaryPair objects, each containing
+                success and failure ProfilingResult points with their
+                confidence and coverage scores.
+
+        Returns:
+            List[InterpolationPoint]: Unique interpolation points for further
+                testing. Each point contains input_length and output_length
+                within the configured bounds. Points are deduplicated to avoid
+                redundant testing.
+
+        Notes:
+            - Skips points if both input and output differences are below
+              min_refinement_dist
+            - Skips points outside the configured min/max bounds for
+              input/output lengths
+            - Deduplicates points with identical input/output lengths keeping
+              only first occurrence
+            - Empty input list results in empty output list
+
+        Example:
+            For a boundary pair with:
+            - Success point: (input=1000, output=2000)
+            - Failure point: (input=2000, output=2000)
+            Will generate:
+            - Interpolation point: (input=1500, output=2000)
+            Assuming the difference exceeds min_refinement_dist and point is
+            within bounds.
+        """
+        new_points = []
+
+        for pair in boundary_pairs:
+            input_diff = abs(pair.failure_point.input_length -
+                             pair.success_point.input_length)
+            output_diff = abs(pair.failure_point.output_length -
+                              pair.success_point.output_length)
+
+            # Add midpoint if at least one dimension is sufficiently separated
+            do_input_ref = input_diff >= self.config.min_refinement_dist
+            do_output_ref = output_diff >= self.config.min_refinement_dist
+            if do_input_ref or do_output_ref:
+                mid_input = (pair.success_point.input_length +
+                             pair.failure_point.input_length) // 2
+                mid_output = (pair.success_point.output_length +
+                              pair.failure_point.output_length) // 2
+
+                # Skip points outside configured bounds
+                if (mid_input <= self.config.min_input_length
+                        or mid_input >= self.config.max_input_length
+                        or mid_output <= self.config.min_output_length
+                        or mid_output >= self.config.max_output_length):
+                    continue
+
+                new_points.append(
+                    InterpolationPoint(input_length=mid_input,
+                                       output_length=mid_output))
+
+        # Remove duplicates using a dictionary to maintain order
+        seen = {}
+        for point in new_points:
+            seen[(point.input_length, point.output_length)] = point
+
+        return list(seen.values())
 
     def _count_tokens(self, text: str) -> int:
         """Count exact number of tokens using model's tokenizer.
@@ -573,8 +656,8 @@ class TGIMemoryProfiler:
             self.config.min_output_length, self.config.max_output_length)
 
         logger.info(
-            f"Grid refinement complete - Current grid has {len(self.input_points)} input "
-            f"points and {len(self.output_points)} output points")
+            f"Grid refinement complete - Current grid has {len(self.input_points)} input points and {len(self.output_points)} output points"  # noqa
+        )
 
     def save_results(self) -> None:
         """Save profiling results to output directory.
