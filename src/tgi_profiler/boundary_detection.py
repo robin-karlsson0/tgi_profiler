@@ -209,7 +209,34 @@ def _filter_pairs(pairs: List[BoundaryPair], config) -> List[BoundaryPair]:
 
 def identify_boundary_pairs(results: List[ProfilingResult],
                             config: BoundaryConfig) -> List[BoundaryPair]:
-    """Find and prioritize boundary pairs using KD-tree and random sampling."""
+    """Detect boundary pairs between successful and failed memory
+        configurations.
+
+    Uses a hybrid approach combining local and global boundary detection:
+    1. Local: K-nearest neighbors to find close success/failure transitions
+    2. Global: M random samples weighted by distance for broad exploration
+    3. Filtering: Keeps highest quality pair per grid region
+
+    Boundary quality measured by:
+    - Confidence score: Based on distance and local consistency
+    - Coverage score: Favors pairs in undersampled regions
+
+    Args:
+        results: List of memory profiling results with success/failure status
+        config: Parameters controlling boundary detection behavior
+
+    Returns:
+        List of boundary pairs sorted by quality, spatially filtered to reduce
+            redundancy
+
+    Raises:
+        ValueError: If point coordinates are non-finite or config invalid
+
+    Logging:
+        Debug: Found pairs and their scores
+        Warning: Numerical stability issues
+        Error: Point processing failures
+    """
     try:
         config.validate()
 
@@ -265,7 +292,7 @@ def identify_boundary_pairs(results: List[ProfilingResult],
                             success, failure, points, config)
 
                         logger.debug(
-                            f"Found boundary pair: conf={confidence:.3f}, cov={coverage:.3f}"
+                            f"Found boundary pair: conf={confidence:.3f}, cov={coverage:.3f}"  # noqa
                         )
                         pairs.append(
                             BoundaryPair(success, failure, confidence,
