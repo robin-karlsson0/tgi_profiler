@@ -7,7 +7,7 @@ import pytest
 from transformers import AutoTokenizer
 
 from tgi_profiler.boundary_detection import BoundaryPair
-from tgi_profiler.profiler import (ProfilerConfig, ProfilingResult,
+from tgi_profiler.profiler import (InterpolationPoint, ProfilingResult,
                                    TGIMemoryProfiler)
 
 
@@ -198,3 +198,154 @@ def test_duplicate_points(profiler):
     ]
     points = profiler._interpolate_boundary_points(pairs)
     assert len(points) == 1  # Should deduplicate identical points
+
+
+#######################################
+#  Test cases for _test_new_points()
+#######################################
+
+
+@pytest.fixture
+def mock_test_point(profiler):
+    """Create a mock test_point method that returns predictable results."""
+    with patch.object(profiler, 'test_point') as mock:
+
+        def side_effect(input_length, output_length):
+            # Simulate success for smaller configurations, failure for larger ones
+            success = input_length <= 1500 and output_length <= 2500
+            return ProfilingResult(input_length=input_length,
+                                   output_length=output_length,
+                                   success=success)
+
+        mock.side_effect = side_effect
+        yield mock
+
+
+def test_test_new_points_basic(profiler, mock_test_point):
+    """Test basic functionality with new points."""
+    # Setup initial results
+    profiler.results = [
+        ProfilingResult(1000, 2000, True),
+        ProfilingResult(2000, 2000, False)
+    ]
+
+    # Create new points to test
+    new_points = [
+        InterpolationPoint(input_length=1500, output_length=2000),  # New point
+        InterpolationPoint(input_length=1800, output_length=2000)  # New point
+    ]
+
+    profiler._test_new_points(new_points)
+
+    # Verify both points were tested
+    assert mock_test_point.call_count == 2
+    assert len(profiler.results) == 4  # Original 2 + 2 new points
+
+
+def test_test_new_points_empty(profiler, mock_test_point):
+    """Test behavior with empty list of new points."""
+    profiler.results = [ProfilingResult(1000, 2000, True)]
+    profiler._test_new_points([])
+
+    # Verify no points were tested
+    mock_test_point.assert_not_called()
+    assert len(profiler.results) == 1  # No change in results
+
+
+def test_test_new_points_duplicates(profiler, mock_test_point):
+    """Test handling of points that have already been tested."""
+    # Setup initial results with one point
+    existing_point = ProfilingResult(1000, 2000, True)
+    profiler.results = [existing_point]
+
+    # Try to test the same point again
+    new_points = [
+        InterpolationPoint(input_length=existing_point.input_length,
+                           output_length=existing_point.output_length)
+    ]
+
+    profiler._test_new_points(new_points)
+
+    # Verify no new tests were performed
+    mock_test_point.assert_not_called()
+    assert len(profiler.results) == 1  # No change in results
+
+
+def test_test_new_points_error_handling(profiler):
+    """Test error handling when testing points fails."""
+    # Mock test_point to raise an exception
+    with patch.object(profiler, 'test_point') as mock:
+        mock.side_effect = Exception("Test failure")
+
+        # Setup test points
+        new_points = [
+            InterpolationPoint(input_length=1500, output_length=2000),
+            InterpolationPoint(input_length=1800, output_length=2000)
+        ]
+
+        # Should not raise exception, should continue with remaining points
+        profiler._test_new_points(new_points)
+
+        # Verify both points were attempted
+        assert mock.call_count == 2
+
+
+def test_test_new_points_mixed_duplicates(profiler, mock_test_point):
+    """Test handling mix of new and previously tested points."""
+    # Setup initial results
+    profiler.results = [
+        ProfilingResult(1000, 2000, True),
+        ProfilingResult(2000, 2000, False)
+    ]
+
+    # Mix of new and existing points
+    new_points = [
+        InterpolationPoint(input_length=1000, output_length=2000),  # Existing
+        InterpolationPoint(input_length=1500, output_length=2000),  # New
+        InterpolationPoint(input_length=2000, output_length=2000)  # Existing
+    ]
+
+    profiler._test_new_points(new_points)
+
+    # Verify only the new point was tested
+    assert mock_test_point.call_count == 1
+    assert len(profiler.results) == 3  # Original 2 + 1 new point
+
+
+def test_test_new_points_result_recording(profiler, mock_test_point):
+    """Test that results are correctly recorded and ordered."""
+    # Setup initial results
+    profiler.results = [ProfilingResult(1000, 2000, True)]
+
+    # Create new points
+    new_points = [
+        InterpolationPoint(input_length=1500, output_length=2000),
+        InterpolationPoint(input_length=1800, output_length=2000)
+    ]
+
+    profiler._test_new_points(new_points)
+
+    # Verify results were added in order
+    assert len(profiler.results) == 3
+    assert profiler.results[0].input_length == 1000  # Original point
+    assert profiler.results[1].input_length == 1500  # First new point
+    assert profiler.results[2].input_length == 1800  # Second new point
+
+
+def test_test_new_points_progress_bar(profiler, mock_test_point):
+    """Test progress bar functionality."""
+    profiler._current_phase = "Test Phase"
+    new_points = [
+        InterpolationPoint(input_length=1500, output_length=2000),
+        InterpolationPoint(input_length=1800, output_length=2000)
+    ]
+
+    with patch('tgi_profiler.profiler.tqdm') as mock_tqdm:
+        mock_progress = Mock()
+        mock_tqdm.return_value.__enter__.return_value = mock_progress
+
+        profiler._test_new_points(new_points)
+
+        # Verify progress bar was created with correct parameters
+        mock_tqdm.assert_called_once()
+        assert mock_progress.update.call_count == 2  # Called for each point

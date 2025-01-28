@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from tgi_profiler.boundary_detection import BoundaryConfig
 from tgi_profiler.constants import VALID_API_TYPES
 
 USER = os.environ.get('USER')
@@ -71,32 +72,58 @@ class ProfilerConfig:
         hf_token: HuggingFace access token (optional)
         hf_cache_dir: Model cache directory (optional)
         base_url: Inference API endpoint (default: "http://localhost:8080/v1")
-        min_refinement_dist: Minimum distance between two boundary points for
-            further refinement (default: 50)
+
+        # Boundary detection parameters
+        k_neighbors: Number of nearest neighbors for local boundary detection (default: 5)
+        m_random: Number of random samples for global exploration (default: 3)
+        distance_scale: Scale factor for distance-based scoring (default: 1000)
+        consistency_radius: Maximum distance to consider points for consistency (default: 1000)
+        redundancy_weight: Weight factor for penalizing redundant pairs (default: 0.5)
+        max_pair_distance: Maximum allowed distance between boundary points (default: 2000)
+        min_refinement_dist: Minimum distance between points for further refinement (default: 50)
 
     Notes:
         Creates output directory if it doesn't exist
         Defaults gpu_ids to [0] if not specified
     """
+    # Basic configuration
     min_input_length: int = 128
     max_input_length: int = 8192
     min_output_length: int = 128
     max_output_length: int = 4096
-    grid_size: int = 8
     port: int = 8080
     output_dir: Path = Path("profiler_results")
     model_id: str = ""
     gpu_ids: List[int] = None
     hf_token: Optional[str] = HF_TOKEN
     hf_cache_dir: Optional[str] = Path(HF_DIR)
-    # Inference client configuration
     base_url: Optional[str] = 'http://localhost:8080/v1'
+
     # Refinement parameters
     refinement_rounds: int = 2
     retries_per_point: int = 8
+
+    # Boundary detection parameters
+    k_neighbors: int = 5
+    m_random: int = 3
+    distance_scale: float = 1000
+    consistency_radius: float = 1000
+    redundancy_weight: float = 0.5
+    max_pair_distance: float = 2000
     min_refinement_dist: int = 50
+    grid_size: int = 8
 
     def __post_init__(self):
         if self.gpu_ids is None:
             self.gpu_ids = [0]
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def create_boundary_config(self) -> BoundaryConfig:
+        """Create a BoundaryConfig instance from profiler settings."""
+        return BoundaryConfig(k_neighbors=self.k_neighbors,
+                              m_random=self.m_random,
+                              distance_scale=self.distance_scale,
+                              consistency_radius=self.consistency_radius,
+                              redundancy_weight=self.redundancy_weight,
+                              grid_size=self.grid_size,
+                              max_pair_distance=self.max_pair_distance)

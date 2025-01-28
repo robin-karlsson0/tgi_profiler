@@ -192,11 +192,19 @@ class TGIMemoryProfiler:
 
         This method orchestrates the entire profiling workflow:
         1. Initial grid search
-        2. Multiple rounds of refinement
+        2. Multiple rounds of refinement focused on boundary regions
         3. Result saving
 
+        The process:
+        - Starts with a coarse grid search
+        - Identifies boundary pairs between success/failure regions
+        - Refines boundary regions through interpolation
+        - Repeats refinement for configured number of rounds
+        - Saves final results
+
         Returns:
-            List[ProfilingResult]: All test results
+            List[ProfilingResult]: All test results including initial grid and
+                refinements
         """
         logger.info("Starting memory profiling process")
 
@@ -204,16 +212,103 @@ class TGIMemoryProfiler:
         self._current_phase = "Initial Grid Search"
         self._run_grid_search()
 
+        # Get boundary detection config from profiler config
+        boundary_config = self.config.create_boundary_config()
+
         # Refinement rounds focusing only on boundary points
         for round_num in range(self.config.refinement_rounds):
             self._current_phase = f"Refinement Round {round_num + 1}"
-            boundary_pairs = identify_boundary_pairs()
+
+            # Identify boundary pairs between success/failure regions
+            boundary_pairs = identify_boundary_pairs(self.results,
+                                                     boundary_config)
+
+            if not boundary_pairs:
+                logger.info(
+                    f"No boundary pairs found in round {round_num + 1}. "
+                    "Stopping refinement early.")
+                break
+
+            # Generate new test points through interpolation
             new_test_points = self._interpolate_boundary_points(boundary_pairs)
+
+            if not new_test_points:
+                logger.info(f"No new points to test in round {round_num + 1}. "
+                            "Stopping refinement early.")
+                break
+
+            # Test the new points and add results
             self._test_new_points(new_test_points)
 
         # Save final results
         self.save_results()
         return self.results
+
+    def _test_new_points(self, new_points: List[InterpolationPoint]) -> None:
+        """Test newly interpolated points near the success/failure boundary.
+
+        Rather than retesting the entire grid, this method focuses only on
+        testing new points generated through boundary interpolation. It:
+        1. Filters out any points that have already been tested
+        2. Shows progress specifically for boundary refinement testing
+        3. Adds results to the overall results collection
+
+        Args:
+            new_points: List of InterpolationPoint objects containing
+                input_length and output_length to test
+
+        Updates:
+            self.results: Appends ProfilingResult for each new test point
+
+        Notes:
+            - Skips points that have already been tested to avoid redundancy
+            - Uses test_point() method for actual testing which handles Docker
+              container lifecycle
+            - Updates progress bar to show boundary refinement progress
+        """
+        if not new_points:
+            logger.info("No new points to test in this refinement round")
+            return
+
+        # Create set of previously tested configurations
+        tested_configs = {(result.input_length, result.output_length)
+                          for result in self.results}
+
+        # Filter out points that have already been tested
+        points_to_test = [
+            point for point in new_points
+            if (point.input_length, point.output_length) not in tested_configs
+        ]
+
+        if not points_to_test:
+            logger.info("All interpolated points have already been tested")
+            return
+
+        logger.info(f"Testing {len(points_to_test)} new boundary points")
+
+        # Create progress bar for boundary refinement
+        with tqdm(total=len(points_to_test),
+                  desc=f"{self._current_phase} - Boundary Refinement") as pbar:
+
+            for point in points_to_test:
+                try:
+                    # Test the point and record result
+                    result = self.test_point(input_length=point.input_length,
+                                             output_length=point.output_length)
+                    self.results.append(result)
+
+                    # Log success/failure status
+                    status = "succeeded" if result.success else "failed"
+                    logger.debug(
+                        f"Point ({point.input_length}, {point.output_length}) {status}"  # noqa
+                    )
+
+                    pbar.update(1)
+
+                except Exception as e:
+                    logger.error(f"Error testing point ({point.input_length}, "
+                                 f"{point.output_length}): {str(e)}")
+                    # Continue with remaining points if one fails
 
     def _interpolate_boundary_points(
         self,
@@ -715,10 +810,10 @@ if __name__ == "__main__":
     config = ProfilerConfig(
         model_id="meta-llama/Llama-3.1-8B-Instruct",
         gpu_ids=[0],
-        min_input_length=128,
-        max_input_length=256,  # Small range for testing
-        min_output_length=128,
-        max_output_length=256,  # Small range for testing
+        min_input_length=4096,
+        max_input_length=65536,  # Small range for testing
+        min_output_length=512,
+        max_output_length=32768,  # Small range for testing
         grid_size=3,  # Minimal grid for quick testing
         refinement_rounds=1,  # Single refinement for testing
         port=8080,
