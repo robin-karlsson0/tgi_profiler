@@ -83,7 +83,7 @@ def test_token_length_mismatch_retries(basic_profiler_config):
     class ChatCompletionOutput:
         choices: list[Choice]
 
-    def mock_chat_completion(messages):
+    def mock_chat_completion(messages, max_tokens, temperature):
         return ChatCompletionOutput(
             choices=[Choice(message=Message(content='Test output'))])
 

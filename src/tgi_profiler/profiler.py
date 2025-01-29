@@ -28,7 +28,7 @@ import json
 # import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from huggingface_hub import InferenceClient
@@ -114,6 +114,103 @@ class InterpolationPoint:
     output_length: int
 
 
+def validate_config_compatibility(saved_config: Dict,
+                                  current_config: ProfilerConfig) -> None:
+    """Validate compatibility between saved and current configurations.
+
+    Checks if critical parameters match between configs to ensure safe
+    resumption. Non-critical parameters are allowed to differ.
+
+    Args:
+        saved_config: Configuration dictionary from results file
+        current_config: Current ProfilerConfig instance
+
+    Raises:
+        ValueError: If critical parameters don't match
+    """
+    critical_params = [
+        "model_id",
+        "gpu_ids",
+        "min_input_length",
+        "max_input_length",
+        "min_output_length",
+        "max_output_length",
+        "grid_size",
+    ]
+
+    for param in critical_params:
+        saved_value = saved_config.get(param)
+        current_value = getattr(current_config, param)
+
+        if saved_value != current_value:
+            raise ValueError(f"Critical parameter mismatch for {param}. "
+                             f"Saved value: {saved_value}, "
+                             f"Current value: {current_value}")
+
+
+def load_previous_results(
+        config: ProfilerConfig) -> Tuple[Dict, List[ProfilingResult]]:
+    """Load and validate previous results from file.
+
+    Args:
+        config: Current ProfilerConfig with resume_from_file specified
+
+    Returns:
+        Tuple containing saved config dict and list of ProfilingResult objects
+
+    Raises:
+        FileNotFoundError: If results file doesn't exist
+        ValueError: If file format is invalid or configs are incompatible
+    """
+    if not config.resume_from_file.exists():
+        raise FileNotFoundError(
+            f"Results file not found: {config.resume_from_file}")
+
+    try:
+        with open(config.resume_from_file) as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid results file format")
+
+    if not isinstance(data,
+                      dict) or "config" not in data or "results" not in data:
+        raise ValueError("Invalid results file format")
+
+    # Validate config compatibility
+    validate_config_compatibility(data["config"], config)
+
+    # Convert results back to ProfilingResult objects
+    results = []
+    required_fields = ["input_length", "output_length", "success"]
+
+    for r in data["results"]:
+        # Validate required fields exist
+        missing_fields = [field for field in required_fields if field not in r]
+        if missing_fields:
+            raise ValueError(
+                f"Missing required fields in result: {missing_fields}")
+
+        # Validate field types
+        if not isinstance(r["input_length"], (int, float)):
+            raise ValueError("input_length must be numeric")
+        if not isinstance(r["output_length"], (int, float)):
+            raise ValueError("output_length must be numeric")
+        if not isinstance(r["success"], bool):
+            raise ValueError("success must be boolean")
+
+        result = ProfilingResult(input_length=r["input_length"],
+                                 output_length=r["output_length"],
+                                 success=r["success"],
+                                 error_type=r.get("error_type"),
+                                 error_msg=r.get("error_msg"),
+                                 container_logs=r.get("container_logs", ""))
+        if "timestamp" in r:
+            result.timestamp = datetime.fromisoformat(r["timestamp"])
+        results.append(result)
+
+    return data["config"], results
+
+
 class TGIMemoryProfiler:
     """Memory profiler for Text Generation Inference deployments.
 
@@ -184,29 +281,35 @@ class TGIMemoryProfiler:
                                          config.grid_size).astype(int)
 
     def run_profiling(self) -> List[ProfilingResult]:
-        """Execute complete profiling process.
+        """Execute complete profiling process, with optional resumption from
+        previous results.
 
-        This method orchestrates the entire profiling workflow:
+        If resuming:
+        1. Skip initial grid search
+        2. Start with boundary refinement using previous results
+        3. Continue for remaining refinement rounds
+
+        If starting fresh:
         1. Initial grid search
-        2. Multiple rounds of refinement focused on boundary regions
-        3. Result saving
-
-        The process:
-        - Starts with a coarse grid search
-        - Identifies boundary pairs between success/failure regions
-        - Refines boundary regions through interpolation
-        - Repeats refinement for configured number of rounds
-        - Saves final results
+        2. Multiple rounds of refinement
+        3. Save results
 
         Returns:
-            List[ProfilingResult]: All test results including initial grid and
-                refinements
+            List[ProfilingResult]: All test results including previous results
+                if resuming
+
+        Notes:
+            - When resuming, refinement_rounds counts from current state
+            - Results are saved after each refinement round
         """
         logger.info("Starting memory profiling process")
 
-        # Initial grid search
-        self._current_phase = "Initial Grid Search"
-        self._run_grid_search()
+        # Only run initial grid search if not resuming
+        if not self.results:
+            self._current_phase = "Initial Grid Search"
+            self._run_grid_search()
+        else:
+            logger.info(f"Resuming with {len(self.results)} existing results")
 
         # Get boundary detection config from profiler config
         boundary_config = self.config.create_boundary_config()
@@ -235,6 +338,9 @@ class TGIMemoryProfiler:
 
             # Test the new points and add results
             self._test_new_points(new_test_points)
+
+            # Save intermediate results after each refinement round
+            self.save_results()
 
         # Save final results
         self.save_results()
@@ -365,10 +471,10 @@ class TGIMemoryProfiler:
                               pair.failure_point.output_length) // 2
 
                 # Skip points outside configured bounds
-                if (mid_input <= self.config.min_input_length
-                        or mid_input >= self.config.max_input_length
-                        or mid_output <= self.config.min_output_length
-                        or mid_output >= self.config.max_output_length):
+                if (mid_input < self.config.min_input_length
+                        or mid_input > self.config.max_input_length
+                        or mid_output < self.config.min_output_length
+                        or mid_output > self.config.max_output_length):
                     continue
 
                 new_points.append(
@@ -656,130 +762,64 @@ class TGIMemoryProfiler:
                     self.results.append(result)
                     self._pbar.update(1)
 
-    def _refine_grid(self) -> None:
-        """Adapt grid points to focus on memory boundary regions using actual
-        token counts.
-
-        Instead of mapping to idealized grid points, this method:
-        1. Uses actual observed token counts from results
-        2. Creates success/failure matrix from real values
-        3. Identifies boundary points between success/failure regions
-        4. Generates new test points around these boundaries
-        """
-        logger.info("Starting grid refinement")
-
-        if not self.results:
-            raise ValueError("No results available for grid refinement")
-
-        # Extract actual input/output lengths from results
-        actual_inputs = sorted(set(r.input_length for r in self.results))
-        actual_outputs = sorted(set(r.output_length for r in self.results))
-
-        # Create mappings for matrix indexing
-        input_dict = {x: i for i, x in enumerate(actual_inputs)}
-        output_dict = {x: i for i, x in enumerate(actual_outputs)}
-
-        # Create success/failure matrix from actual results
-        success_matrix = np.zeros((len(actual_inputs), len(actual_outputs)))
-        for result in self.results:
-            i = input_dict[result.input_length]
-            j = output_dict[result.output_length]
-            success_matrix[i, j] = 1 if result.success else 0
-
-        # Find boundary points
-        boundary_inputs = set()
-        boundary_outputs = set()
-
-        for i in range(success_matrix.shape[0]):
-            for j in range(success_matrix.shape[1]):
-                if success_matrix[i, j] == 1:  # If point is successful
-                    # Check neighbors
-                    is_boundary = False
-                    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        ni, nj = i + di, j + dj
-                        if (0 <= ni < success_matrix.shape[0]
-                                and 0 <= nj < success_matrix.shape[1]
-                                and success_matrix[ni, nj] == 0):
-                            is_boundary = True
-                            break
-
-                    if is_boundary:
-                        boundary_inputs.add(actual_inputs[i])
-                        boundary_outputs.add(actual_outputs[j])
-
-        # Generate new points around boundary
-        def generate_neighborhood(point: int,
-                                  points_list: List[int]) -> List[int]:
-            """Generate new test points between point and its neighbors."""
-            idx = points_list.index(point)
-            new_points = []
-
-            # Add midpoints between point and its neighbors
-            if idx > 0:
-                new_points.append((point + points_list[idx - 1]) // 2)
-            if idx < len(points_list) - 1:
-                new_points.append((point + points_list[idx + 1]) // 2)
-
-            return new_points
-
-        # Generate new points around boundary
-        new_input_points = set()
-        new_output_points = set()
-
-        for input_point in boundary_inputs:
-            new_input_points.update(
-                generate_neighborhood(input_point, actual_inputs))
-
-        for output_point in boundary_outputs:
-            new_output_points.update(
-                generate_neighborhood(output_point, actual_outputs))
-
-        # Update grids with new points, keeping them within original bounds
-        def filter_points(points: set, min_val: int,
-                          max_val: int) -> np.ndarray:
-            """Filter points to stay within bounds and maintain uniqueness."""
-            return np.sort(
-                np.unique([p for p in points if min_val <= p <= max_val]))
-
-        self.input_points = filter_points(
-            set(actual_inputs) | new_input_points,
-            self.config.min_input_length, self.config.max_input_length)
-
-        self.output_points = filter_points(
-            set(actual_outputs) | new_output_points,
-            self.config.min_output_length, self.config.max_output_length)
-
-        logger.info(
-            f"Grid refinement complete - Current grid has {len(self.input_points)} input points and {len(self.output_points)} output points"  # noqa
-        )
-
     def save_results(self) -> None:
         """Save profiling results to output directory.
 
         Writes JSON file containing:
-        - Full configuration parameters
+        - Critical configuration parameters needed for resumption
         - All test results with timestamps
         - Success/failure data for each point
 
+        Critical parameters include:
+        - Model and GPU configuration
+        - Sequence length bounds
+        - Grid search parameters
+        - Token generation parameters
+
+        Non-critical parameters like output directory, logging settings, etc.
+        are controlled by the current run configuration.
+
         Creates:
             profile_results_{timestamp}.json in config.output_dir
-
-        Note:
-            Results include raw data for external analysis
-            Timestamp ensures unique filenames
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         results_file = self.config.output_dir / f"profile_res_{timestamp}.json"
 
+        # Extract critical parameters for resumption
+        critical_config = {
+            # Model & hardware config
+            "model_id": self.config.model_id,
+            "gpu_ids": self.config.gpu_ids,
+            "base_url": self.config.base_url,
+
+            # Sequence length bounds
+            "min_input_length": self.config.min_input_length,
+            "max_input_length": self.config.max_input_length,
+            "min_output_length": self.config.min_output_length,
+            "max_output_length": self.config.max_output_length,
+
+            # Grid search parameters
+            "grid_size": self.config.grid_size,
+            "refinement_rounds": self.config.refinement_rounds,
+
+            # Token generation parameters
+            "output_tolerance_pct": self.config.output_tolerance_pct,
+            "temp": self.config.temp,
+
+            # Boundary detection parameters
+            "k_neighbors": self.config.k_neighbors,
+            "m_random": self.config.m_random,
+            "distance_scale": self.config.distance_scale,
+            "consistency_radius": self.config.consistency_radius,
+            "redundancy_weight": self.config.redundancy_weight,
+            "max_pair_distance": self.config.max_pair_distance,
+            "min_refinement_dist": self.config.min_refinement_dist
+        }
+
         with open(results_file, 'w') as f:
             json.dump(
                 {
-                    "config": {
-                        "model_id": self.config.model_id,
-                        "gpu_ids": self.config.gpu_ids,
-                        "grid_size": self.config.grid_size,
-                        "refinement_rounds": self.config.refinement_rounds
-                    },
+                    "config": critical_config,
                     "results": [r.to_dict() for r in self.results]
                 },
                 f,
@@ -789,15 +829,41 @@ class TGIMemoryProfiler:
 
 
 def profile_model(config: ProfilerConfig) -> List[ProfilingResult]:
-    """Convenience function to run profiling with given configuration.
+    """Run profiling with given configuration, optionally resuming from
+    previous results.
 
     Args:
-        config: ProfilerConfig specifying profiling parameters
+        config: ProfilerConfig specifying profiling parameters and optional
+            resume_from_file path
 
     Returns:
         List[ProfilingResult]: Results of profiling
+
+    Raises:
+        FileNotFoundError: If resume_from_file specified but not found
+        ValueError: If resume file is invalid or incompatible
     """
     profiler = TGIMemoryProfiler(config)
+    if config.resume_from_file:
+        logger.info(
+            f"Resuming from previous results: {config.resume_from_file}")
+        try:
+            saved_config, previous_results = load_previous_results(config)
+
+            # Initialize profiler with previous results
+            profiler.results = previous_results
+
+            # Log resumption details
+            logger.info(f"Loaded {len(previous_results)} previous results")
+            logger.info("Skipping initial grid search")
+
+            # Set current phase to indicate resumption
+            profiler._current_phase = "Resuming Refinement"
+
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"Failed to resume from file: {e}")
+            exit()
+
     return profiler.run_profiling()
 
 
@@ -813,12 +879,14 @@ if __name__ == "__main__":
         max_input_length=32768,  # Small range for testing
         min_output_length=512,
         max_output_length=32768,  # Small range for testing
-        grid_size=3,  # Minimal grid for quick testing
-        refinement_rounds=5,  # Single refinement for testing
+        grid_size=2,  # Minimal grid for quick testing
+        refinement_rounds=1,  # Single refinement for testing
         port=8080,
-        output_dir=Path("./test_results"),
+        output_dir=Path("./test_results2"),
         hf_token=os.getenv("HF_TOKEN"),
-        retries_per_point=8)
+        retries_per_point=8,
+        # resume_from_file='PATH/TO/YOUR/FILE.json',
+    )
 
     # Create output directory if it doesn't exist
     config.output_dir.mkdir(parents=True, exist_ok=True)

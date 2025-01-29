@@ -72,17 +72,27 @@ class ProfilerConfig:
         hf_token: HuggingFace access token (optional)
         hf_cache_dir: Model cache directory (optional)
         base_url: Inference API endpoint (default: "http://localhost:8080/v1")
-        output_tolerance_pct: Tolerance [%] for output length variation (default: 5.0)
-        temp: Temperature for response generation high enough to avoid predicting EOS token (default: 1.5)
+        output_tolerance_pct: Tolerance [%] for output length variation
+            (default: 5.0)
+        temp: Temperature for response generation high enough to avoid
+            predicting EOS token (default: 1.5
+        resume_from_file: Optional path to resume from a previous run by
+            specifying the path to the results JSON file
 
         # Boundary detection parameters
-        k_neighbors: Number of nearest neighbors for local boundary detection (default: 5)
+        k_neighbors: Number of nearest neighbors for local boundary detection
+            (default: 5)
         m_random: Number of random samples for global exploration (default: 3)
-        distance_scale: Scale factor for distance-based scoring (default: 1000)
-        consistency_radius: Maximum distance to consider points for consistency (default: 1000)
-        redundancy_weight: Weight factor for penalizing redundant pairs (default: 0.5)
-        max_pair_distance: Maximum allowed distance between boundary points (default: 2000)
-        min_refinement_dist: Minimum distance between points for further refinement (default: 50)
+        distance_scale: Scale factor for distance-based scoring
+            (default: 1000)
+        consistency_radius: Maximum distance to consider points for
+            consistency (default: 1000)
+        redundancy_weight: Weight factor for penalizing redundant pairs
+            (default: 0.5)
+        max_pair_distance: Maximum allowed distance between boundary points
+            (default: 2000)
+        min_refinement_dist: Minimum distance between points for further
+            refinement (default: 50)
 
     Notes:
         Creates output directory if it doesn't exist
@@ -102,6 +112,7 @@ class ProfilerConfig:
     base_url: Optional[str] = 'http://localhost:8080/v1'
     output_tolerance_pct: float = 0.05
     temp = 1.5
+    resume_from_file: Optional[str] = None
 
     # Refinement parameters
     refinement_rounds: int = 2
@@ -121,6 +132,10 @@ class ProfilerConfig:
         if self.gpu_ids is None:
             self.gpu_ids = [0]
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Convert resume_from_file to Path if provided
+        if self.resume_from_file:
+            self.resume_from_file = Path(self.resume_from_file)
 
     def create_boundary_config(self) -> BoundaryConfig:
         """Create a BoundaryConfig instance from profiler settings."""
