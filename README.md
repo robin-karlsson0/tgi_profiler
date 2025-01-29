@@ -17,6 +17,16 @@ A framework for empirically determining maximum sequence length capabilities of 
 pip install tgi-profiler
 ```
 
+# Development Installation
+
+Clone the repository:
+```bash
+git clone https://github.com/yourusername/tgi-profiler.git
+cd tgi-profiler
+
+# Install in development mode
+pip install -e .
+
 ## Prerequisites
 
 - Docker with NVIDIA Container Toolkit
