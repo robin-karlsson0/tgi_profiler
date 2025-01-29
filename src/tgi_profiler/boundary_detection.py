@@ -49,7 +49,7 @@ class BoundaryConfig:
     consistency_radius: float = 1000
     redundancy_weight: float = 0.5
     grid_size: int = 500
-    max_pair_distance: float = 2000
+    max_pair_distance: float = 1e12
 
     def validate(self):
         """Validate configuration parameters."""
