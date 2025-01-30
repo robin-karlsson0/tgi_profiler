@@ -1,13 +1,16 @@
 import json
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from PIL import Image
 from transformers import AutoTokenizer
 
 from tgi_profiler.boundary_detection import BoundaryPair
-from tgi_profiler.profiler import (InterpolationPoint, ProfilingResult,
-                                   TGIMemoryProfiler, load_previous_results,
+from tgi_profiler.profiler import (InterpolationPoint, ProfilerConfig,
+                                   ProfilingResult, TGIMemoryProfiler,
+                                   load_previous_results,
                                    validate_config_compatibility)
 
 
@@ -43,6 +46,130 @@ def test_generate_exact_token_input(profiler):
     num_tokens = len(tokenizer.tokenize(input_txt))
 
     assert num_tokens == target_length
+
+
+##################################
+#  Tests for Multimodal Support
+##################################
+
+
+def test_profiler_config_multimodal_validation(basic_profiler_config,
+                                               dummy_image):
+    """Test validation of multimodal configuration."""
+    # Create a dict of base config without multimodal params
+    base_config = {
+        k: v
+        for k, v in basic_profiler_config.__dict__.items()
+        if k not in ['multimodal', 'dummy_image_path']
+    }
+
+    # Test valid multimodal config
+    config = ProfilerConfig(
+        **base_config,  # Copy filtered base config
+        multimodal=True,
+        dummy_image_path=dummy_image)
+
+    # Should not raise any exception
+    TGIMemoryProfiler(config)
+
+    # Test missing image path
+    with pytest.raises(
+            ValueError,
+            match="dummy_image_path must be provided when multimodal=True"):
+        config = ProfilerConfig(
+            **base_config,  # Copy filtered base config
+            multimodal=True,
+            dummy_image_path=None)
+        TGIMemoryProfiler(config)
+
+    # Test non-existent image path
+    with pytest.raises(FileNotFoundError, match="Dummy image not found"):
+        config = ProfilerConfig(
+            **base_config,  # Copy filtered base config
+            multimodal=True,
+            dummy_image_path=Path("/nonexistent/image.jpg"))
+        TGIMemoryProfiler(config)
+
+
+def test_create_messages_text_mode(profiler):
+    """Test message creation in text-only mode."""
+    input_txt = "Test input text"
+    messages = profiler._create_messages(input_txt)
+
+    assert len(messages) == 2
+    assert messages[0]['role'] == 'system'
+    assert messages[1]['role'] == 'user'
+    assert isinstance(messages[1]['content'], str)
+    assert input_txt in messages[1]['content']
+
+
+def test_create_messages_multimodal_mode(basic_profiler_config, dummy_image):
+    """Test message creation in multimodal mode."""
+    basic_profiler_config.multimodal = True
+    basic_profiler_config.dummy_image_path = dummy_image
+    profiler = TGIMemoryProfiler(basic_profiler_config)
+
+    input_txt = "Test input text"
+    messages = profiler._create_messages(input_txt)
+
+    assert len(messages) == 2
+    assert messages[0]['role'] == 'system'
+    assert messages[1]['role'] == 'user'
+    assert isinstance(messages[1]['content'], list)
+    assert len(messages[1]['content']) == 2
+    assert messages[1]['content'][0]['type'] == 'image_url'
+    assert messages[1]['content'][1]['type'] == 'text'
+    assert input_txt in messages[1]['content'][1]['text']
+
+
+def test_image_to_data_url(profiler, dummy_image):
+    """Test conversion of image to data URL."""
+    with open(dummy_image, 'rb') as f:
+        img = Image.open(f)
+        data_url = profiler.image_to_data_url(img, img_quality=90)
+
+    assert data_url.startswith('data:image/jpeg;base64,')
+    assert len(data_url) > 0
+
+
+def test_resume_with_multimodal_config(basic_profiler_config, dummy_image,
+                                       sample_results_data, tmp_path):
+    """Test resuming profiling with multimodal configuration."""
+    # Add multimodal settings to saved config
+    sample_results_data["config"]["multimodal"] = True
+    sample_results_data["config"]["dummy_image_path"] = str(dummy_image)
+
+    results_file = tmp_path / "multimodal_results.json"
+    with open(results_file, 'w') as f:
+        json.dump(sample_results_data, f)
+
+    basic_profiler_config.resume_from_file = results_file
+    basic_profiler_config.multimodal = True
+    basic_profiler_config.dummy_image_path = dummy_image
+
+    saved_config, results = load_previous_results(basic_profiler_config)
+
+    assert saved_config["multimodal"] is True
+    assert Path(saved_config["dummy_image_path"]) == dummy_image
+
+
+def test_multimodal_config_mismatch(basic_profiler_config, dummy_image,
+                                    sample_results_data, tmp_path):
+    """Test error handling when resuming with mismatched multimodal configs."""
+    # Add multimodal settings to saved config
+    sample_results_data["config"]["multimodal"] = True
+    sample_results_data["config"]["dummy_image_path"] = str(dummy_image)
+
+    results_file = tmp_path / "multimodal_results.json"
+    with open(results_file, 'w') as f:
+        json.dump(sample_results_data, f)
+
+    basic_profiler_config.resume_from_file = results_file
+    basic_profiler_config.multimodal = False  # Mismatch with saved config
+
+    with pytest.raises(ValueError,
+                       match="Critical parameter mismatch for multimodal"):
+        load_previous_results(basic_profiler_config)
 
 
 ###################################################
@@ -369,7 +496,13 @@ def test_validate_config_identical(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
     }
+
+    # If multimodal is True, include dummy_image_path
+    if basic_profiler_config.multimodal:
+        saved_config["dummy_image_path"] = str(
+            basic_profiler_config.dummy_image_path)
 
     # Should not raise any exception
     validate_config_compatibility(saved_config, basic_profiler_config)
@@ -385,7 +518,13 @@ def test_validate_config_model_mismatch(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
     }
+
+    # If multimodal is True, include dummy_image_path
+    if basic_profiler_config.multimodal:
+        saved_config["dummy_image_path"] = str(
+            basic_profiler_config.dummy_image_path)
 
     with pytest.raises(ValueError,
                        match="Critical parameter mismatch for model_id"):
@@ -402,11 +541,56 @@ def test_validate_config_gpu_mismatch(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
     }
+
+    # If multimodal is True, include dummy_image_path
+    if basic_profiler_config.multimodal:
+        saved_config["dummy_image_path"] = str(
+            basic_profiler_config.dummy_image_path)
 
     with pytest.raises(ValueError,
                        match="Critical parameter mismatch for gpu_ids"):
         validate_config_compatibility(saved_config, basic_profiler_config)
+
+
+def test_validate_config_multimodal_mismatch(basic_profiler_config,
+                                             dummy_image):
+    """Test validation fails when multimodal settings differ."""
+    # Prepare base config with multimodal enabled
+    base_config = basic_profiler_config
+    base_config.multimodal = True
+    base_config.dummy_image_path = dummy_image
+
+    # Test multimodal flag mismatch
+    saved_config = {
+        "model_id": base_config.model_id,
+        "gpu_ids": base_config.gpu_ids,
+        "min_input_length": base_config.min_input_length,
+        "max_input_length": base_config.max_input_length,
+        "min_output_length": base_config.min_output_length,
+        "max_output_length": base_config.max_output_length,
+        "grid_size": base_config.grid_size,
+        "multimodal": False  # Different from base_config
+    }
+
+    # If multimodal is True, include dummy_image_path
+    if basic_profiler_config.multimodal:
+        saved_config["dummy_image_path"] = str(
+            basic_profiler_config.dummy_image_path)
+
+    with pytest.raises(ValueError,
+                       match="Critical parameter mismatch for multimodal"):
+        validate_config_compatibility(saved_config, base_config)
+
+    # Test image path mismatch
+    saved_config["multimodal"] = True
+    saved_config["dummy_image_path"] = "/different/path.jpg"
+
+    with pytest.raises(
+            ValueError,
+            match="Critical parameter mismatch for dummy_image_path"):
+        validate_config_compatibility(saved_config, base_config)
 
 
 def test_validate_config_sequence_lengths(basic_profiler_config):
@@ -460,6 +644,7 @@ def test_validate_config_extra_params(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
         "extra_param": "value",
         "another_extra": 123
     }
@@ -481,6 +666,7 @@ def test_validate_config_none_values(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
     }
 
     # Should not raise any exception
@@ -498,6 +684,7 @@ def test_validate_config_type_mismatch(basic_profiler_config):
         "min_output_length": basic_profiler_config.min_output_length,
         "max_output_length": basic_profiler_config.max_output_length,
         "grid_size": basic_profiler_config.grid_size,
+        "multimodal": basic_profiler_config.multimodal,
     }
 
     with pytest.raises(
@@ -523,6 +710,7 @@ def sample_results_data(basic_profiler_config):
             "min_output_length": basic_profiler_config.min_output_length,
             "max_output_length": basic_profiler_config.max_output_length,
             "grid_size": basic_profiler_config.grid_size,
+            "multimodal": basic_profiler_config.multimodal,
         },
         "results": [{
             "input_length": 1000,

@@ -78,6 +78,9 @@ class ProfilerConfig:
             predicting EOS token (default: 1.5
         resume_from_file: Optional path to resume from a previous run by
             specifying the path to the results JSON file
+        multimodal: Enable multimodal testing with dummy image (default: False)
+        dummy_image_path: Path to dummy image for multimodal testing (required
+            if multimodal=True)
 
         # Boundary detection parameters
         k_neighbors: Number of nearest neighbors for local boundary detection
@@ -114,6 +117,10 @@ class ProfilerConfig:
     temp = 1.5
     resume_from_file: Optional[str] = None
 
+    # Multimodal configuration
+    multimodal: bool = False
+    dummy_image_path: Optional[Path] = None
+
     # Refinement parameters
     refinement_rounds: int = 2
     retries_per_point: int = 8
@@ -136,6 +143,16 @@ class ProfilerConfig:
         # Convert resume_from_file to Path if provided
         if self.resume_from_file:
             self.resume_from_file = Path(self.resume_from_file)
+
+        # Validate multimodal configuration
+        if self.multimodal:
+            if not self.dummy_image_path:
+                raise ValueError(
+                    "dummy_image_path must be provided when multimodal=True")
+            self.dummy_image_path = Path(self.dummy_image_path)
+            if not self.dummy_image_path.exists():
+                raise FileNotFoundError(
+                    f"Dummy image not found at: {self.dummy_image_path}")
 
     def create_boundary_config(self) -> BoundaryConfig:
         """Create a BoundaryConfig instance from profiler settings."""

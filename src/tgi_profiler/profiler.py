@@ -24,14 +24,16 @@ Example Usage:
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
-# import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from huggingface_hub import InferenceClient
+from PIL import Image
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -41,10 +43,10 @@ from tgi_profiler.config import ProfilerConfig
 from tgi_profiler.tgi_container import TGIConfig, TGIContainer
 from tgi_profiler.utils.colored_logging import ColoredLogger
 
-# logging.basicConfig(level=logging.INFO)
 logger = ColoredLogger(name=__name__)
 
-INPUT_LEN_MSG_PROMPTING = 77  # Checked with Llama-3.1-8B-Instruct
+# Ensure maximum input length is at least tested inupt length
+INPUT_OVERHEAD_MARGIN = 50
 
 
 class TokenGenerationError(Exception):
@@ -136,6 +138,7 @@ def validate_config_compatibility(saved_config: Dict,
         "min_output_length",
         "max_output_length",
         "grid_size",
+        "multimodal",
     ]
 
     for param in critical_params:
@@ -146,6 +149,16 @@ def validate_config_compatibility(saved_config: Dict,
             raise ValueError(f"Critical parameter mismatch for {param}. "
                              f"Saved value: {saved_value}, "
                              f"Current value: {current_value}")
+
+        # If multimodal is True, also check dummy_image_path
+        if param == "multimodal" and saved_value is True:
+            saved_path = saved_config.get("dummy_image_path")
+            current_path = str(current_config.dummy_image_path)
+            if saved_path != current_path:
+                raise ValueError(
+                    f"Critical parameter mismatch for dummy_image_path. "
+                    f"Saved value: {saved_path}, Current value: {current_path}"
+                )
 
 
 def load_previous_results(
@@ -279,6 +292,13 @@ class TGIMemoryProfiler:
         self.output_points = np.linspace(config.min_output_length,
                                          config.max_output_length,
                                          config.grid_size).astype(int)
+
+        self.sys_msg = 'You must always generate exactly the maximum allowed tokens. Fill any remaining space with detailed explanations.'  # noqa
+        self.usr_msg = '\nPlease provide an extremely detailed response. Continue providing more details until you reach the maximum allowed length. Do not stop early.'  # noqa
+
+        self.format_token_overhead = self._measure_format_token_overhead()
+        logger.debug(
+            f'Prompt format overhead tokens: {self.format_token_overhead}')
 
     def run_profiling(self) -> List[ProfilingResult]:
         """Execute complete profiling process, with optional resumption from
@@ -488,6 +508,53 @@ class TGIMemoryProfiler:
 
         return list(seen.values())
 
+    def _measure_format_token_overhead(self) -> int:
+        """Measure token overhead from message format structure.
+
+        Determines how many tokens are used by the message format itself
+        (system message, role indicators, content structure) by creating
+        a minimal message with empty/minimal content.
+
+        Returns:
+            int: Number of tokens used by the message format
+        """
+        system_message = {
+            "role": "system",
+            "content": self.sys_msg,
+        }
+
+        if not self.config.multimodal:
+            # For text-only format
+            user_message = {
+                "role": "user",
+                "content": self.usr_msg,
+            }
+        else:
+            # For multimodal format
+            user_message = {
+                "role":
+                "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url":
+                            "data:image/jpeg;base64,/9j/"  # Minimal base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": self.usr_msg
+                    }
+                ]
+            }
+        messages = [system_message, user_message]
+
+        # Convert to string to count tokens
+        format_str = str(messages)
+        num_format_tokens = self._count_tokens(format_str)
+        return num_format_tokens
+
     def _count_tokens(self, text: str) -> int:
         """Count exact number of tokens using model's tokenizer.
 
@@ -561,54 +628,41 @@ class TGIMemoryProfiler:
         """Generate model output with exact target token length.
 
         Uses messaging and retries to achieve output length within tolerance:
-        1. Prompts model to generate maximum tokens
-        2. Tracks best attempt across retries
-        3. Verifies token count matches target
+        1. Creates appropriate messages based on modality (text-only or
+           multimodal)
+        2. For multimodal, includes a dummy image in the prompt while only
+           counting text tokens towards the target length
+        3. Tracks best attempt across retries
+        4. Verifies token count matches target
 
         Args:
             target_length: Target number of tokens for generated text
             input_txt: Prompt text to generate from
 
         Returns:
-            tuple[str, int]: Generated text and its token count
+            tuple[str, int]: Generated text and its token count. For multimodal
+                models, the token count excludes image tokens.
 
         Raises:
             TokenGenerationError: If output length not within OUTPUT_TOLERANCE
                 after retries
             APIError: If model inference fails
-
-        Example:
-            output, length = _generate_exact_token_output(1000, "Explain love")
-            assert abs(length - 1000) < OUTPUT_TOLERANCE
+            FileNotFoundError: If dummy image not found in multimodal mode
+            PIL.UnidentifiedImageError: If image cannot be opened/processed
 
         Notes:
             - Uses system prompt to encourage verbose output
             - Tracks closest attempt if target not hit
-            - Retries configured via config.retries_per_llm_inference
-            - Token count tolerance set by OUTPUT_TOLERANCE constant
+            - In multimodal mode, includes a constant image overhead while
+            focusing on text token capacity
+            - Token count tolerance set by output_tolerance_pct config param
+            - High temperature prevents early EOS token generation
         """
-        # Create prompt that forces model to generate max length
-        system_msg = {
-            'role':
-            'system',
-            'content':
-            "You must always generate exactly the maximum allowed tokens. Fill any remaining space with detailed explanations.",  # noqa
-        }
-
-        user_msg = {
-            'role':
-            'user',
-            'content':
-            f'{input_txt}\nPlease provide an extremely detailed response. Continue providing more details until you reach the maximum allowed length. Do not stop early.',  # noqa
-        }
-
-        messages = [system_msg, user_msg]
-
+        messages = self._create_messages(input_txt)
         best_attempt = {'text': None, 'length': 0, 'diff': float('inf')}
 
         # Attempt inference and verify lengths
         for attempt in range(self.config.retries_per_point):
-
             logger.debug(f"Attempt {attempt + 1}/"
                          f"{self.config.retries_per_point}")
 
@@ -648,6 +702,84 @@ class TGIMemoryProfiler:
                                    actual_length=best_attempt['length'],
                                    attempts=self.config.retries_per_point)
 
+    def _create_messages(self, input_txt: str) -> List[dict]:
+        """Create messages for model inference based on modality.
+
+        Constructs a list of messages suitable for chat completion API, with
+        format varying based on whether multimodal mode is enabled. In
+        text-only mode, creates standard chat messages. In multimodal mode,
+        includes the dummy image alongside text in the user message.
+
+        Args:
+            input_txt: Base prompt text to include in user message. Will be
+                augmented with instructions to generate maximum length output.
+
+        Returns:
+            List[dict]: Messages formatted for chat completion API. Always
+                includes a system message and a user message. In multimodal
+                mode, the user message contains both image and text content
+                following TGI's multimodal message format.
+
+        Raises:
+            FileNotFoundError: If dummy image not found in multimodal mode
+            PIL.UnidentifiedImageError: If image cannot be opened/processed
+
+        Example formats:
+            Text-only mode:
+            [
+                {'role': 'system', 'content': '...'},
+                {'role': 'user', 'content': 'text...'}
+            ]
+
+            Multimodal mode:
+            [
+                {'role': 'system', 'content': '...'},
+                {'role': 'user', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': img_data_url}},
+                    {'type': 'text', 'text': 'text...'}
+                ]}
+            ]
+
+        Notes:
+            - System message encourages maximum token generation
+            - Image is encoded at 90% quality to balance size and quality
+            - Message format follows TGI chat completion API requirements
+        """
+        system_msg = {
+            'role': 'system',
+            'content': self.sys_msg,
+        }
+
+        if not self.config.multimodal:
+            user_msg = {
+                'role': 'user',
+                'content': f'{input_txt}{self.usr_msg}',
+            }
+        else:
+            # Read and encode the dummy image
+            query_img = Image.open(self.config.dummy_image_path)
+            image_quality = 90
+            img_data_url = self.image_to_data_url(query_img, image_quality)
+
+            user_msg = {
+                'role':
+                'user',
+                'content': [
+                    {
+                        'type': 'image_url',
+                        'image_url': {
+                            'url': img_data_url
+                        },
+                    },
+                    {
+                        'type': 'text',
+                        'text': f'{input_txt}{self.usr_msg}',
+                    },
+                ],
+            }
+
+        return [system_msg, user_msg]
+
     def test_point(self, input_length: int,
                    output_length: int) -> ProfilingResult:
         """Test TGI memory capacity with specific sequence lengths.
@@ -682,7 +814,8 @@ class TGIMemoryProfiler:
             model_id=self.config.model_id,
             gpu_ids=self.config.gpu_ids,
             port=self.config.port,
-            max_input_length=input_length,
+            # Ensure tested input length includes message format tokens
+            max_input_length=input_length + INPUT_OVERHEAD_MARGIN,
             max_output_length=output_length,
             hf_token=self.config.hf_token,
             hf_cache_dir=self.config.hf_cache_dir,
@@ -698,7 +831,7 @@ class TGIMemoryProfiler:
                 # Create input that will tokenize to exact length minus
                 # approx. tokens required for message formatting
                 input_txt = self._generate_exact_token_input(
-                    input_length - INPUT_LEN_MSG_PROMPTING)
+                    input_length - self.format_token_overhead)
                 logger.debug(f'Generated input text of length '
                              f'{self._count_tokens(input_txt)}')
 
@@ -720,7 +853,7 @@ class TGIMemoryProfiler:
                 logger.debug(f"Generated output text of length {output_len}")
 
                 actual_input_tokens = self._count_tokens(
-                    input_txt) + INPUT_LEN_MSG_PROMPTING
+                    input_txt) + self.format_token_overhead
                 return ProfilingResult(input_length=actual_input_tokens,
                                        output_length=output_len,
                                        success=True)
@@ -806,6 +939,10 @@ class TGIMemoryProfiler:
             "output_tolerance_pct": self.config.output_tolerance_pct,
             "temp": self.config.temp,
 
+            # Multimodal configuration
+            "multimodal": self.config.multimodal,
+            "dummy_image_path": self.config.dummy_image_path,
+
             # Boundary detection parameters
             "k_neighbors": self.config.k_neighbors,
             "m_random": self.config.m_random,
@@ -826,6 +963,19 @@ class TGIMemoryProfiler:
                 indent=2)
 
         logger.info(f"Results saved to {results_file}")
+
+    @staticmethod
+    def image_to_data_url(img: Image,
+                          img_quality: int = 80,
+                          format: str = 'JPEG') -> str:
+        '''
+        Ref: https://github.com/huggingface/huggingface_hub/pull/2556
+        '''
+        with io.BytesIO() as buffer:
+            img.save(buffer, format=format, quality=img_quality)
+            img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            img_data_url = f"data:image/{format.lower()};base64,{img_str}"
+        return img_data_url
 
 
 def profile_model(config: ProfilerConfig) -> List[ProfilingResult]:

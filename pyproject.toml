@@ -43,12 +43,6 @@ dependencies = [
 "Homepage" = "https://github.com/robin-karlsson0/tgi_profiler"
 "Bug Tracker" = "https://github.com/robin-karlsson0/tgi-profiler/issues"
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["tgi_profiler*"]

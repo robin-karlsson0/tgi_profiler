@@ -13,9 +13,12 @@ from tgi_profiler.profiler import (ProfilerConfig, TGIContainer,
 from tgi_profiler.tgi_container import TGIConfig
 
 MODEL = 'meta-llama/Llama-3.1-8B-Instruct'
+MULTIMODAL_MODEL = 'meta-llama/Llama-3.2-11B-Vision-Instruct'
 USER = os.environ.get('USER')
 HF_DIR = f'/home/{USER}/.cache/huggingface'
 HF_TOKEN = os.environ.get('HF_TOKEN')
+
+DUMMY_IMG_PTH = Path("tests/fixtures/test_image.jpg")
 
 
 def pytest_configure(config):
@@ -176,6 +179,43 @@ def basic_profiler_config():
                           hf_token=HF_TOKEN,
                           hf_cache_dir=Path(HF_DIR),
                           output_dir=Path("/tmp"))
+
+
+@pytest.fixture(scope="session")
+def dummy_image():
+    """Create a small dummy image for multimodal testing."""
+    import numpy as np
+    from PIL import Image
+
+    # Create a 560x560 test image
+    img_array = np.random.randint(0, 255, (560, 560, 3), dtype=np.uint8)
+    img = Image.fromarray(img_array)
+
+    # Save to temporary file
+    test_img_path = DUMMY_IMG_PTH
+    test_img_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(test_img_path)
+
+    yield test_img_path
+
+    # Cleanup
+    if test_img_path.exists():
+        test_img_path.unlink()
+
+
+@pytest.fixture
+def basic_multimodal_config(basic_profiler_config, dummy_image):
+    """Create a basic multimodal profiler configuration for testing."""
+    config_dict = {
+        k: v
+        for k, v in basic_profiler_config.__dict__.items()
+        if k not in ['multimodal', 'dummy_image_path', 'model_id']
+    }
+
+    return ProfilerConfig(**config_dict,
+                          model_id=MULTIMODAL_MODEL,
+                          multimodal=True,
+                          dummy_image_path=dummy_image)
 
 
 @pytest.fixture

@@ -148,6 +148,32 @@ def test_test_point_long(basic_profiler_config):
 
 
 @pytest.mark.integration
+def test_test_point_short_multimodal(basic_multimodal_config):
+    """Test multimodal profiling with short sequences.
+
+    Tests:
+        - Input length: 100 tokens (text only, excluding image tokens)
+        - Output length: 50 tokens
+        - Token count accuracy within tolerance
+        - Proper handling of image input
+
+    Args:
+        basic_profiler_config: Standard test configuration fixture
+        dummy_image: Path to test image fixture
+    """
+    input_length = 150
+    output_length = 50
+
+    profiler = TGIMemoryProfiler(basic_multimodal_config)
+
+    # Test complete inference flow
+    result = profiler.test_point(input_length, output_length)
+    assert result.success
+    assert abs(result.input_length - input_length) <= TOKEN_LEN_THRESH
+    assert abs(result.output_length - output_length) <= TOKEN_LEN_THRESH
+
+
+@pytest.mark.integration
 def test_error_handling(basic_profiler_config):
     """Test OOM error handling with extreme sequence lengths.
 
