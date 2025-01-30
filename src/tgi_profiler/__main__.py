@@ -24,7 +24,7 @@ def parse_args():
                         type=int,
                         nargs="+",
                         default=[0],
-                        help="GPU device IDs to use")
+                        help="Sequence of GPU device IDs to use (ex: 0 1 2 3)")
     parser.add_argument("--min-input-length",
                         type=int,
                         default=2048,
@@ -132,6 +132,17 @@ def main():
     logger.info(f"Model: {config.model_id}")
     logger.info(f"Grid size: {config.grid_size}")
     logger.info(f"Refinement rounds: {config.refinement_rounds}")
+    logger.info(f"Output directory: {config.output_dir}")
+    logger.info(f"Retries per point: {config.retries_per_point}")
+    logger.info(f"Resume from: {config.resume_from_file}")
+    logger.info(f"Port: {config.port}")
+    logger.info(f"Minimum input length: {config.min_input_length}")
+    logger.info(f"Maximum input length: {config.max_input_length}")
+    logger.info(f"Minimum output length: {config.min_output_length}")
+    logger.info(f"Maximum output length: {config.max_output_length}")
+    logger.info(f"GPU IDs: {config.gpu_ids}")
+    logger.info(f"HuggingFace token: {'*****' if config.hf_token else 'None'}")
+    logger.info(f"HuggingFace cache dir: {config.hf_cache_dir}")
     if config.multimodal:
         logger.info("Mode: Multimodal")
         logger.info(f"Dummy image: {config.dummy_image_path}")
