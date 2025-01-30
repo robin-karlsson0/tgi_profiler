@@ -1,6 +1,40 @@
 # TGI Memory Profiler
 
-A framework for empirically determining the maximum sequence length capabilities of Large Language Models (LLMs) deployed via Text Generation Inference (TGI). This tool helps prevent out-of-memory (OOM) errors by identifying safe operating boundaries for input and output sequence lengths.
+A framework for empirically determining the maximum sequence length capabilities of Large Language Models (LLMs) deployed via Text Generation Inference (TGI). This tool helps prevent out-of-memory (OOM) errors by identifying safe operating boundaries for maximum input and output sequence lengths.
+
+Launching TGI server:
+```bash
+# Optimal values provided by TGI Memory Profiler
+MAX_INPUT_TOKENS=??? <-- Want to know
+MAX_OUTPUT_TOKENS=??? <-- Want to know
+
+MAX_TOTAL_TOKENS=$((MAX_INPUT_TOKENS + MAX_OUTPUT_TOKENS))
+MAX_PREFILL_TOKENS=$((MAX_INPUT_TOKENS + 50))
+
+docker run --gpus all --shm-size 64g -p 8080:80 -v $volume:/data \
+    ghcr.io/huggingface/text-generation-inference:3.0.2 \
+    --model-id $model \
+    --max-input-length $MAX_INPUT_TOKENS \
+    --max-total-tokens $MAX_TOTAL_TOKENS \
+    --max-batch-prefill-tokens $MAX_PREFILL_TOKENS \
+    ...  
+```
+
+Consuming TGI server:
+```python
+# Optimal value provided by TGI Memory Profiler
+MAX_OUTPUT_TOKENS=??? <-- Want to know
+
+output = client.chat.completions.create(
+    model="tgi",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Count to 10"},
+    ],
+    stream=True,
+    max_tokens=MAX_OUTPUT_TOKENS,
+)
+```
 
 ## Key Features
 
