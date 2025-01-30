@@ -7,7 +7,7 @@ from tgi_profiler.boundary_detection import BoundaryConfig
 from tgi_profiler.constants import VALID_API_TYPES
 
 USER = os.environ.get('USER')
-HF_DIR = f'/home/{USER}/.cache/huggingface'
+HF_DIR = os.environ.get('HF_DIR')
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 
