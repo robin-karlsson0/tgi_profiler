@@ -921,36 +921,57 @@ class TGIMemoryProfiler:
         # Extract critical parameters for resumption
         critical_config = {
             # Model & hardware config
-            "model_id": self.config.model_id,
-            "gpu_ids": self.config.gpu_ids,
-            "base_url": self.config.base_url,
+            "model_id":
+            self.config.model_id,
+            "gpu_ids":
+            self.config.gpu_ids,
+            "base_url":
+            self.config.base_url,
 
             # Sequence length bounds
-            "min_input_length": self.config.min_input_length,
-            "max_input_length": self.config.max_input_length,
-            "min_output_length": self.config.min_output_length,
-            "max_output_length": self.config.max_output_length,
+            "min_input_length":
+            self.config.min_input_length,
+            "max_input_length":
+            self.config.max_input_length,
+            "min_output_length":
+            self.config.min_output_length,
+            "max_output_length":
+            self.config.max_output_length,
 
             # Grid search parameters
-            "grid_size": self.config.grid_size,
-            "refinement_rounds": self.config.refinement_rounds,
+            "grid_size":
+            self.config.grid_size,
+            "refinement_rounds":
+            self.config.refinement_rounds,
 
             # Token generation parameters
-            "output_tolerance_pct": self.config.output_tolerance_pct,
-            "temp": self.config.temp,
+            "output_tolerance_pct":
+            self.config.output_tolerance_pct,
+            "temp":
+            self.config.temp,
 
             # Multimodal configuration
-            "multimodal": self.config.multimodal,
-            "dummy_image_path": self.config.dummy_image_path,
+            "multimodal":
+            self.config.multimodal,
+            "dummy_image_path":
+            str(self.config.dummy_image_path)
+            if self.config.dummy_image_path else None,
 
             # Boundary detection parameters
-            "k_neighbors": self.config.k_neighbors,
-            "m_random": self.config.m_random,
-            "distance_scale": self.config.distance_scale,
-            "consistency_radius": self.config.consistency_radius,
-            "redundancy_weight": self.config.redundancy_weight,
-            "max_pair_distance": self.config.max_pair_distance,
-            "min_refinement_dist": self.config.min_refinement_dist
+            "k_neighbors":
+            self.config.k_neighbors,
+            "m_random":
+            self.config.m_random,
+            "distance_scale":
+            self.config.distance_scale,
+            "consistency_radius":
+            self.config.consistency_radius,
+            "redundancy_weight":
+            self.config.redundancy_weight,
+            "max_pair_distance":
+            self.config.max_pair_distance,
+            "min_refinement_dist":
+            self.config.min_refinement_dist,
         }
 
         with open(results_file, 'w') as f:

@@ -26,10 +26,6 @@ Dependencies:
     - matplotlib
     - scipy
     - sklearn
-
-Author: Robin Karlsson
-License: GNU GPL v3
-Version: 1.0.0
 """
 import argparse
 import json
@@ -289,15 +285,6 @@ def main():
                         help='Interval for minor grid lines (default: 1000)')
 
     args = parser.parse_args()
-
-    # Load and plot results
-    data = load_results(args.results_file)
-    plot_results(data,
-                 output_path=args.output,
-                 show_plot=not args.no_show,
-                 fit_boundary=not args.no_boundary,
-                 major_tick_interval=args.major_tick,
-                 minor_tick_interval=args.minor_tick)
 
     # Load and plot results
     data = load_results(args.results_file)

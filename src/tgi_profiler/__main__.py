@@ -70,7 +70,23 @@ def parse_args():
                         type=str,
                         help="Path to previous results file to resume from")
 
-    return parser.parse_args()
+    # Multimodal arguments
+    parser.add_argument("--multimodal",
+                        action="store_true",
+                        help="Enable multimodal profiling mode")
+    parser.add_argument("--dummy-image",
+                        type=Path,
+                        help="Path to dummy image for multimodal profiling")
+
+    args = parser.parse_args()
+
+    # Validate multimodal arguments
+    if args.multimodal and not args.dummy_image:
+        parser.error("--dummy-image is required when using --multimodal mode")
+    if args.dummy_image and not args.multimodal:
+        parser.error("--multimodal flag is required when using --dummy-image")
+
+    return args
 
 
 def main():
@@ -84,20 +100,29 @@ def main():
         )
         sys.exit(1)
 
+    # Validate dummy image path if in multimodal mode
+    if args.multimodal and not args.dummy_image.exists():
+        logger.error(f"Dummy image not found at: {args.dummy_image}")
+        sys.exit(1)
+
     # Create config from arguments
-    config = ProfilerConfig(model_id=args.model_id,
-                            gpu_ids=args.gpu_ids,
-                            min_input_length=args.min_input_length,
-                            max_input_length=args.max_input_length,
-                            min_output_length=args.min_output_length,
-                            max_output_length=args.max_output_length,
-                            grid_size=args.grid_size,
-                            refinement_rounds=args.refinement_rounds,
-                            port=args.port,
-                            output_dir=args.output_dir,
-                            hf_token=args.hf_token,
-                            retries_per_point=args.retries_per_point,
-                            resume_from_file=args.resume_from)
+    config = ProfilerConfig(
+        model_id=args.model_id,
+        gpu_ids=args.gpu_ids,
+        min_input_length=args.min_input_length,
+        max_input_length=args.max_input_length,
+        min_output_length=args.min_output_length,
+        max_output_length=args.max_output_length,
+        grid_size=args.grid_size,
+        refinement_rounds=args.refinement_rounds,
+        port=args.port,
+        output_dir=args.output_dir,
+        hf_token=args.hf_token,
+        retries_per_point=args.retries_per_point,
+        resume_from_file=args.resume_from,
+        multimodal=args.multimodal,
+        dummy_image_path=args.dummy_image if args.multimodal else None,
+    )
 
     # Create output directory
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -107,6 +132,11 @@ def main():
     logger.info(f"Model: {config.model_id}")
     logger.info(f"Grid size: {config.grid_size}")
     logger.info(f"Refinement rounds: {config.refinement_rounds}")
+    if config.multimodal:
+        logger.info("Mode: Multimodal")
+        logger.info(f"Dummy image: {config.dummy_image_path}")
+    else:
+        logger.info("Mode: Text-only")
 
     results = profile_model(config)
 
