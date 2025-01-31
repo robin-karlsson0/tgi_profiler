@@ -182,6 +182,49 @@ Results are saved as JSON files containing:
 - Timestamps for tracking
 - Boundary detection parameters
 
+Example result output JSON file:
+```
+{
+  "config": {
+    "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+    "gpu_ids": [
+      0,
+      1
+    ],
+    "base_url": "http://localhost:8080/v1",
+    "min_input_length": 128,
+    "max_input_length": 128000,
+    "min_output_length": 128,
+    "max_output_length": 128000,
+    "grid_size": 4,
+    "refinement_rounds": 10,
+    "output_tolerance_pct": 0.05,
+    "temp": 1.5,
+    "multimodal": false,
+    "dummy_image_path": null,
+    "k_neighbors": 5,
+    "m_random": 3,
+    "distance_scale": 1000,
+    "consistency_radius": 1000,
+    "redundancy_weight": 0.5,
+    "max_pair_distance": 1000000000000.0,
+    "min_refinement_dist": 50
+  },
+  "results": [
+    {
+      "input_length": 128,
+      "output_length": 128,
+      "success": true,
+      "error_type": null,
+      "error_msg": null,
+      "container_logs": "",
+      "timestamp": "2025-01-30T20:03:00.706655"
+    },
+    ...
+  ]
+}
+```
+
 ## Visualization
 
 The included visualization tool creates plots showing:
