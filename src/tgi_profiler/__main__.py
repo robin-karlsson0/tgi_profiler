@@ -107,7 +107,7 @@ def validate_profile_args(args):
 
     if not args.hf_token:
         logger.error(
-            "HuggingFace token not found. Please set HF_TOKEN environment variable or use --hf-token"
+            "HuggingFace token not found. Please set HF_TOKEN environment variable or use --hf-token"  # noqa
         )
         sys.exit(1)
 
@@ -207,11 +207,16 @@ def handle_visualize(args):
 
 def main():
     """Main entry point for the TGI Memory Profiler CLI"""
+    from importlib.metadata import version
+
     # Create the top-level parser
     parser = argparse.ArgumentParser(
         description=
         "TGI Memory Profiler - Profile and visualize LLM memory usage",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--version',
+                        action='version',
+                        version=f'%(prog)s {version("tgi-profiler")}')
 
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest='command',
