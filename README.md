@@ -36,6 +36,10 @@ output = client.chat.completions.create(
 )
 ```
 
+Example visualization of the discovered memory profile for Llama 3.2 70B on a 2x H100 GPU server:
+
+![Image](https://github.com/user-attachments/assets/447552b5-a2aa-40f1-9673-2449872b1a57)
+
 ## Key Features
 
 - **Adaptive Grid Search**: Systematically explores viable combinations of input and output sequence lengths
