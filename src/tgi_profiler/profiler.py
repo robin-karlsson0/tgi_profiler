@@ -328,6 +328,8 @@ class TGIMemoryProfiler:
         if not self.results:
             self._current_phase = "Initial Grid Search"
             self._run_grid_search()
+            # Save intermediate results
+            self.save_results()
         else:
             logger.info(f"Resuming with {len(self.results)} existing results")
 

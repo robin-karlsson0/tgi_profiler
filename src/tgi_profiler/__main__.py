@@ -4,15 +4,12 @@ import os
 import sys
 from pathlib import Path
 
-from tgi_profiler import ColoredLogger, ProfilerConfig, profile_model
+from tgi_profiler import (ColoredLogger, ProfilerConfig, load_results,
+                          plot_results, profile_model)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="TGI Memory Profiler - Determine maximum sequence length "
-        "capabilities of LLM models on particular machines",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
+def add_profile_args(parser):
+    """Add profiling-specific arguments to parser"""
     # Required arguments
     parser.add_argument(
         "model_id",
@@ -78,32 +75,60 @@ def parse_args():
                         type=Path,
                         help="Path to dummy image for multimodal profiling")
 
-    args = parser.parse_args()
 
-    # Validate multimodal arguments
-    if args.multimodal and not args.dummy_image:
-        parser.error("--dummy-image is required when using --multimodal mode")
-    if args.dummy_image and not args.multimodal:
-        parser.error("--multimodal flag is required when using --dummy-image")
+def add_visualize_args(parser):
+    """Add visualization-specific arguments to parser"""
+    parser.add_argument('results_file',
+                        type=str,
+                        help='Path to results JSON file')
+    parser.add_argument('-o',
+                        '--output',
+                        type=str,
+                        help='Output path for plot image')
+    parser.add_argument('--no-show',
+                        action='store_true',
+                        help='Do not display the plot')
+    parser.add_argument('--no-boundary',
+                        action='store_true',
+                        help='Do not plot estimated boundary')
+    parser.add_argument('--major-tick',
+                        type=int,
+                        default=5000,
+                        help='Interval for major grid lines')
+    parser.add_argument('--minor-tick',
+                        type=int,
+                        default=1000,
+                        help='Interval for minor grid lines')
 
-    return args
 
-
-def main():
-    args = parse_args()
-
+def validate_profile_args(args):
+    """Validate profiling arguments"""
     logger = ColoredLogger(name=__name__, level="INFO")
 
     if not args.hf_token:
         logger.error(
-            "HuggingFace token not found. Please set HF_TOKEN environment variable or use --hf-token"  # noqa
+            "HuggingFace token not found. Please set HF_TOKEN environment variable or use --hf-token"
         )
+        sys.exit(1)
+
+    # Validate multimodal arguments
+    if args.multimodal and not args.dummy_image:
+        logger.error("--dummy-image is required when using --multimodal mode")
+        sys.exit(1)
+    if args.dummy_image and not args.multimodal:
+        logger.error("--multimodal flag is required when using --dummy-image")
         sys.exit(1)
 
     # Validate dummy image path if in multimodal mode
     if args.multimodal and not args.dummy_image.exists():
         logger.error(f"Dummy image not found at: {args.dummy_image}")
         sys.exit(1)
+
+
+def handle_profile(args):
+    """Handle the profile subcommand"""
+    logger = ColoredLogger(name=__name__, level="INFO")
+    validate_profile_args(args)
 
     # Create config from arguments
     config = ProfilerConfig(
@@ -127,7 +152,7 @@ def main():
     # Create output directory
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Run profiling
+    # Log configuration
     logger.info("Starting profiling run")
     logger.info(f"Model: {config.model_id}")
     logger.info(f"Grid size: {config.grid_size}")
@@ -166,6 +191,53 @@ def main():
         logger.info(f"Maximum successful output length: {max_output}")
     else:
         logger.warning("No successful test points found")
+
+
+def handle_visualize(args):
+    """Handle the visualize subcommand"""
+    # Load and plot results
+    data = load_results(args.results_file)
+    plot_results(data,
+                 output_path=args.output,
+                 show_plot=not args.no_show,
+                 fit_boundary=not args.no_boundary,
+                 major_tick_interval=args.major_tick,
+                 minor_tick_interval=args.minor_tick)
+
+
+def main():
+    """Main entry point for the TGI Memory Profiler CLI"""
+    # Create the top-level parser
+    parser = argparse.ArgumentParser(
+        description=
+        "TGI Memory Profiler - Profile and visualize LLM memory usage",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command',
+                                       help='Command to execute',
+                                       required=True)
+
+    # Create parser for the "profile" command
+    profile_parser = subparsers.add_parser(
+        'profile',
+        help='Profile memory usage of a model',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    add_profile_args(profile_parser)
+
+    # Create parser for the "visualize" command
+    visualize_parser = subparsers.add_parser(
+        'visualize',
+        help='Visualize profiling results',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    add_visualize_args(visualize_parser)
+
+    # Parse arguments and call appropriate handler
+    args = parser.parse_args()
+    if args.command == 'profile':
+        handle_profile(args)
+    elif args.command == 'visualize':
+        handle_visualize(args)
 
 
 if __name__ == "__main__":
