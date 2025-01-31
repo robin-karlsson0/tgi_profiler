@@ -1,0 +1,12 @@
+huggingface-hub
+docker
+lark
+colorama
+anthropic
+openai
+pillow
+numpy
+transformers
+scipy
+matplotlib
+scikit-learn
