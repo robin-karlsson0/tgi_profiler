@@ -92,7 +92,7 @@ export HF_DIR="/path/to/cache"  # Optional: HuggingFace cache directory
 
 Basic profiling:
 ```bash
-tgi-profiler meta-llama/Llama-3.1-8B-Instruct \
+tgi-profiler profile meta-llama/Llama-3.1-8B-Instruct \
     --gpu-ids 0 \
     --min-input-length 128 \
     --max-input-length 32768 \
@@ -105,7 +105,7 @@ tgi-profiler meta-llama/Llama-3.1-8B-Instruct \
 
 Multimodal model profiling:
 ```bash
-tgi-profiler meta-llama/Llama-3.2-11B-Vision-Instruct \
+tgi-profiler profile meta-llama/Llama-3.2-11B-Vision-Instruct \
     --multimodal \
     --dummy-image PATH/TO/IMG \
     --gpu-ids 0 1 \
@@ -118,7 +118,7 @@ tgi-profiler meta-llama/Llama-3.2-11B-Vision-Instruct \
     --output-dir profiler_results_llama3_2_8b
 ```
 
-Run `tgi-profiler --help` for full list of input arguments
+Run `tgi-profiler profile --help` for full list of input arguments
 
 ### Python API Usage
 
@@ -232,6 +232,16 @@ The included visualization tool creates plots showing:
 - Success/failure regions
 - Estimated memory boundary curve
 - Point density heatmap
+
+Example result visualization:
+```bash
+tgi-profile visualize PATH/TO/RESULT_FILE.JSON \
+    --output result_img.png \
+    --major-tick 5000 \
+    --minor-tick 1000 \
+```
+
+Run `tgi-profiler visualize --help` for full list of input arguments
 
 ## Contributing
 Contributions are welcome! Please see our contributing guidelines (CONTRIBUTING.md) for details on:
